@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, Any, List
 from DataManager import ParallelUtils as utils
 import Industrytrending as industry
-import Distribution as dist
+
 from MACDAnalyzer import MACDAnalyzer
 from   DataManager import DatabaseWriter
 from   DataManager import QuantDataPerformer
@@ -436,7 +436,7 @@ class StockAnalyzer:
         else:  # cci_value < -200
             return f'极度超卖 ({cci_value:.2f})'
 
-    # ==========================================================================
+
 
     def _save_ta_signals_to_txt(self, ta_signals: Dict[str, pd.DataFrame]):
         """
@@ -745,9 +745,7 @@ class StockAnalyzer:
         # 合并名称到最终报告 (按代码合并，保证基础表的简称是正确的)
         final_df = pd.merge(final_df, all_names, on='股票代码', how='left')
 
-        chip_df = processed_data.get('chip_data', pd.DataFrame())
-        if not chip_df.empty:
-            final_df = pd.merge(final_df, chip_df, on='股票代码', how='left')
+
 
         # 1. 从实时行情数据中提取用于价格合并的列 (简称和最新价)
         if '股票简称' not in spot_df.columns:
@@ -1009,7 +1007,7 @@ class StockAnalyzer:
             final_df.drop(columns=['当前价格'], inplace=True, errors='ignore')
 
         # 最终列顺序 (手动调整，确保最重要的信息在前)
-        base_cols = [  '股票代码', '股票简称', '行业', '最新价', '获利比例', '90集中度', '平均成本', '筹码状态']
+        base_cols = [  '股票代码', '股票简称', '行业', '最新价']
 
         signal_cols = [
             '强势股', '量价齐升', '连涨天数', '放量天数', 'TOP10行业',
@@ -1043,14 +1041,14 @@ class StockAnalyzer:
 
         # 映射
         stock_df['所属行业信号'] = stock_df['行业'].map(signal_map).fillna('')
-        stock_df['行业趋势分'] = stock_df['行业'].map(score_map).fillna(0)
+      #stock_df['行业趋势分'] = stock_df['行业'].map(score_map).fillna(0)
 
         return stock_df
 
     def _generate_report(self, sheets_data: Dict[str, pd.DataFrame]):
         """生成 Excel 报告。"""
         print(f"\n>>> 正在生成 Excel 报告...")
-        report_path = os.path.join(self.config.SAVE_DIRECTORY, f"股票筛选报告_{self.today_str}.xlsx")
+        report_path = os.path.join(self.config.SAVE_DIRECTORY, f"CoreNews_{self.today_str}.xlsx")
 
         try:
             writer = pd.ExcelWriter(report_path, engine='xlsxwriter')
@@ -1145,42 +1143,6 @@ class StockAnalyzer:
                 print("未找到任何有效的股票代码，流程终止。")
                 return
 
-                # --- 筹码分布数据获取 (带缓存逻辑) ---
-            print("\n>>> 正在准备筹码分布数据...")
-
-                # 定义缓存文件路径
-            chip_file_name = f"筹码分布数据_{self.today_str}.txt"
-            chip_file_path = os.path.join(self.temp_dir, chip_file_name)
-            chip_data_df = pd.DataFrame()
-
-                # 1. 判断本地是否有缓存
-            if os.path.exists(chip_file_path):
-                 try:
-                        print(f"  - 发现本地筹码分布缓存，正在读取: {chip_file_name}")
-                        # 注意：读取时指定 dtype，防止股票代码前面的 0 丢失
-                        chip_data_df = pd.read_csv(chip_file_path, sep='|', encoding='utf-8-sig',
-                                                   dtype={'股票代码': str})
-                 except Exception as e:
-                        print(f"  - [WARN] 读取筹码分布缓存失败: {e}，将尝试重新获取...")
-
-                # 2. 如果没有读取到数据（文件不存在 或 读取失败），则调用接口
-            if chip_data_df.empty:
-                    print(f"  - 本地无有效缓存，正在通过接口并发获取筹码分布数据 (这可能需要一些时间)...")
-
-                    # 初始化分析器并获取数据
-                    chip_analyzer = dist.ChipDistributionAnalyzer(self.config)
-                    chip_data_df = chip_analyzer.fetch_chip_data_parallel(filtered_codes_list)
-
-                    # 3. 获取成功后保存到本地
-                    if not chip_data_df.empty:
-                        try:
-                            chip_data_df.to_csv(chip_file_path, sep='|', index=False, encoding='utf-8-sig')
-                            print(f"  - 筹码数据获取成功并已保存至: {chip_file_name}")
-                        except Exception as e:
-                            print(f"  - [ERROR] 保存筹码分布文件失败: {e}")
-
-            # --- 筹码分布逻辑结束 ---
-
             # 历史数据获取和技术指标计算
             hist_df_all = self._fetch_hist_data_parallel(filtered_codes_list, days=90)
 
@@ -1222,8 +1184,8 @@ class StockAnalyzer:
                 **ta_signals,
                 'processed_xstp_df': processed_xstp_df,
                 'processed_main_report': processed_main_report,
-                'individual_industry': industry_info_df,
-                'chip_data': chip_data_df
+                'individual_industry': industry_info_df
+
             }
 
             consolidated_report = self._consolidate_data(processed_data)
@@ -1288,9 +1250,6 @@ class StockAnalyzer:
             except Exception as e:
                 print(f"!!! [同步中断] 任务运行异常: {e}")
 
-
-
-
         except Exception as e:
             print(f"\n[FATAL] 致命错误：数据分析流程意外终止。原因: {e}")
             raise
@@ -1298,7 +1257,6 @@ class StockAnalyzer:
         finally:
             end_time = time.time()
             print(f"\n>>> 流程结束。总耗时: {timedelta(seconds=end_time - self.start_time)}")
-
 
 if __name__ == "__main__":
     analyzer = StockAnalyzer()
