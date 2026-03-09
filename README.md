@@ -36,153 +36,278 @@
 
 ## 📖 项目简介
 
-这是一个针对 A 股市场的综合性量化分析系统。它结合了基本面数据（机构研报、资金流向）与技术面数据（多周期 MACD、KDJ 背离、CCI 分层、均线多头），通过多线程并发获取数据，自动清洗、计算并生成一份包含投资建议的 Excel 深度分析报告。
+本项目是一个基于 Python 的自动化 A 股股票分析和数据同步系统。它集成了 Akshare 和 Tushare (Pro版) 等多个数据源，能够每日自动获取最新的股票行情、财务信息、资金流向、行业趋势，并结合多种技术指标（MACD、KDJ、CCI、RSI、BOLL）和筹码分布进行深度分析。
 
-核心设计理念是：“机构选股 + 技术择时”。系统优先筛选机构看好的标的，再通过量化指标寻找最佳买点。
+系统设计了高效的并发处理机制和本地缓存，确保数据获取的稳定性和速度。分析结果将生成一份多页的 Excel 报告，同时，核心的股票历史K线数据和分析快照将同步至 PostgreSQL 数据库，为后续更复杂的量化分析提供坚实的数据基础。此外，项目还提供了一个独立的工具，用于查询特定股票的历史新闻资讯。
+
+核心目标：提供一个自动化、多维度、数据驱动的工具，帮助投资者每日快速洞察 A 股市场，辅助投资决策。
 
 <br>
 
 ## 🚀 核心功能与策略
 
+**多源数据整合**
 
-**多维数据源整合**
+Akshare：获取实时行情、主力研报、财务摘要、市场资金流向、强势股池、连涨股、量价齐升、持续放量、均线突破等数据。
 
-实时行情：全市场股票的最新价、涨跌幅、成交量。
+Tushare (Pro)：获取 A 股主板股票基础信息和交易日历。
 
-机构研报：主力研报盈利预测，筛选机构评级为“买入”的股票。
+**历史K线数据同步**
 
-资金流向：5日、10日、20日的主力资金净流入数据。
+PostgreSQL 数据库：自动检测并同步 A 股主要上市公司的日 K 线数据，支持增量更新和除权信息自动校验及全量重写，确保历史数据的准确性和完整性。
 
-特色榜单：强势股池、连续上涨、量价齐升、持续放量榜单。
+**全面股票分析**
 
-行业板块：涨幅前10的行业板块及其成分股。
+基础行情：最新价、股票简称。
 
-<br>
+研报洞察：分析师买入评级次数。
 
-**深度技术分析**
+趋势捕捉：均线多头排列判断（10/30/60日均线）。强势股、量价齐升、连涨天数、持续放量。所属行业是否为当日涨幅 Top10 行业。
 
-Dual-Cycle MACD："双周期共振：同时计算标准周期 (12,26,9) 和加速周期 (6,13,5)。
+资金动向：5日/10日/20日资金流入净额，并判断资金动能趋势。
 
-动能状态：计算 DIF 动能，识别“加速上涨”、“减速上涨”、“加速下跌”。
+**技术指标信号**
 
-零轴区分：明确区分“零轴上金叉”（强势）与“零轴下金叉”（反弹）。"
+MACD：标准周期 (12, 26, 9) 和加速周期 (6, 13, 5) 的金叉（零轴上/下）、DIF 值及动能状态（加速上涨/下跌，减速上涨/下跌）。
 
-Enhanced-KDJ：识别价格创新低但 K 值未创新低的“底背离”信号。
+KDJ：极值J线反转、底背离金叉、低位超卖金叉、趋势确认金叉。
 
-极值反转：捕捉 J 线从负值极速反转的超跌机会。趋势确认：结合 5 日均线过滤虚假金叉。
+CCI：极度超买/超卖，强势/弱势超买/超卖，常态波动。
 
-Pro-CCI分层：将 CCI 数值量化为：极度超买(>200)、强势超买(100-200)、弱势超卖(-200~-100)、极度超卖(<-200)。
+RSI：超卖低位及底背离判断。
 
-量比过滤：计算 5 日均量，剔除无量上涨 (量比 < 0.7) 的虚高个股。自动标记缩量、温和放量、巨量。
+BOLL：低波/缩口状态。
 
-Trend-MA多头：筛选 10日 > 30日 > 60日 均线的稳健标的。突破信号：捕捉向上突破关键均线的异动。
+筹码分布分析：获利比例、90集中度、平均成本、筹码状态（高度锁仓、筹码密集、低位深套、筹码分散等）。
 
-BOLL ：识别低波段宽缩口，变盘前夕。
+行业趋势分析：基于即时、3日、5日、10日、20日行业资金流向，计算行业资金分、价格分、换手分、趋势得分，并识别“资金主攻”、“退潮预警”、“黄金坑潜入”、“低位强异动”等行业信号。
 
-RSI：低位超卖区的底背离检测。
+**智能筛选与报告生成**
 
-<br>
+根据多重信号组合，智能剔除“弱势且加速下跌”的股票，聚焦潜力标的。
 
-**行业权重分析**
+生成结构清晰、多工作表的 Excel 报告，方便查阅所有分析结果。
 
-通过多周期加权算法评估行业热度，并将其作为过滤器嵌入个股交易决策流中，实现“顺势而为”的量化策略，降低过滤出假突破的难度。
+**本地缓存与并发**
 
-资金热度因子计算 3、5、10、20 日资金净额的加权总和，反映资金介入的持续性。
+利用本地文件缓存机制，减少重复 API 调用，加快程序运行速度。
 
-money_factor = ( 净额_3d * 0.4 + 净额_5d* 0.3 + 净额_10d * 0.2 + 净额_20d' * 0.1)
+多线程并发处理股票数据获取和技术分析，提高整体效率。
 
-价格强度因子计算对应周期的行业指数涨跌幅，反映价格对资金的反馈强度。
+个股新闻查询工具：提供独立的脚本，支持查询指定股票在过去 30 或 60 天内的新闻资讯，并保存为 Excel 文件。
 
-price_factor = (涨幅_3d* 0.4 + 涨幅_5d * 0.3 涨幅_10d* 0.2 + 涨幅_20d * 0.1)
-
-将上述两个银子做进一步计算，得出趋势得分 TrendScore = (price_factor * 0.5 + price_factor * 0.5).round(2)
-
-信号定义TrendScore > 85 资金主攻 ; < 25 退潮预警; default 观望
-
-
-量化交易中，最忌讳的是使用“移动平均（SMA）”，因为它对旧数据和新数据一视同仁，导致信号发出的时刻往往股价已经涨完了。
-
-近期高权重（0.4）：
-
-如果近 3 日资金突然暴增，这个权重能让指标迅速调头向上，产生“敏感度”。将最大权重控制在 0.4，并辅助 0.3 和 0.2，本质上是做了一次低通滤波。它滤掉了单日的随机噪点，只保留了“有预谋的持续性流入”。
-
-远期低权重（0.1）：
-
-20 日前的资金流虽然对现在影响微弱，但它决定了行业是在“长期阴跌”还是“长期走牛”。
-
-<br>
-
-
-**高性能与鲁棒性**
-
-并发加速：使用 ThreadPoolExecutor (默认 15 线程) 并发下载历史行情与行业数据，大幅缩短运行时间。
-
-智能缓存：内置本地缓存机制，避免重复请求，支持断点续跑。
-
-自动重试：针对网络波动设计的装饰器级重试机制，确保数据获取的高可用性。
-
-脏数据清洗：自动处理不同数据源的列名差异（如“最新价”、“现价”、“收盘”统一化）。
-
-<br>
+<br />
 
 ## 🛠️ 安装与配置
 
-Python 13+
+**Python 环境**
 
-pip install akshare pandas pandas_ta numpy xlsxwriter
+确保您已安装 Python 3.13+ 版本。
 
-git clone [https://github.com/paiyuyen/Multi-factor-Quantitative-Stock-Selection-Analysis-System.git](https://github.com/paiyuyen/Multi-factor-Quantitative-Stock-Selection-Analysis-System.git)
+**数据库**
 
-python ShareAnalysis.py
+PostgreSQL：请确保您的系统已安装并运行 PostgreSQL 数据库。
+数据库创建：在 PostgreSQL 中创建一个名为 Corenews 的数据库，并记住您的数据库用户名和密码（本项目默认为 postgres 和 025874yan）。
+创建表结构：执行 sql_schema.sql 文件中的 SQL 语句，创建 stock_daily_kline 和 daily_stock_report, daily_industry_analysis 等必要的数据表。
 
-<br>
+**Tushare Pro Token**
 
-**运行流程详解**
+前往 Tushare Pro官网 注册账号并获取您的 Token。您需要在 HistDataEngine.py 和 Ts_GetStockBasicinfo.py 文件中更新 self.token 变量为您的实际 Token。
 
-初始化：检查目录，配置线程池。
+HistDataEngine.py 和 Ts_GetStockBasicinfo.py 中
+self.token = "YOUR_TUSHARE_TOKEN_HERE" # 请替换为你的 Tushare Token
 
-获取原始数据：下载研报、资金流、榜单数据。
-
-初步筛选：过滤掉机构“买入”评级次数不足的股票。
-
-历史行情下载：并发下载入选股票过去 90 天的日线数据 (前复权)。
-
-量化计算 MACD/KDJ/RSI/CCI/BOLL。执行量比过滤 (Vol Ratio > 0.7)。提取技术信号（金叉、背离、突破）。
-
-数据清洗与合并：将基本面数据与技术面信号对齐,输出 Excel 文件。
+Akshare：Akshare 大部分接口无需 Token，但有访问频率限制。本项目已内置重试和延迟机制以应对。
 
 <br>
 
-## 📊 报告输出解读
+## ⚙️ 安装
 
-生成的 Excel 报告 (股票筛选报告_YYYYMMDD.xlsx) 包含多个 Sheet，其中 "数据汇总" 是核心表。
+**克隆项目仓库：**
+
+git clone https://github.com/your_username/your_repo_name.git
+
+cd your_repo_name
+
+**创建并激活虚拟环境 (推荐)：**
+
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
+**安装依赖包:**
+
+pip install pandas akshare tushare sqlalchemy psycopg2-binary pandas-ta openpyxl xlsxwriter
+
+注：openpyxl 和 xlsxwriter 用于 Excel 文件的读写。psycopg2-binary 是 PostgreSQL 的 Python 驱动。
+
+<br />
+
+## 🛠️ 配置
+
+在运行之前，您可能需要根据您的环境调整以下配置：
+
+**Corenews_Main.py (Config 类)：**
+
+SAVE_DIRECTORY: 报告和本地缓存文件的保存根目录。默认为 C:\Users\YourUsername\Downloads\CoreNews_Reports。您可以在 Corenews_Main.py 的 Config 类中修改。
+
+class Config:
+    def __init__(self):
+        self.HOME_DIRECTORY = os.path.expanduser('~')
+        self.SAVE_DIRECTORY = os.path.join(self.HOME_DIRECTORY, 'Downloads', 'CoreNews_Reports')
+        # ...
+
+TEMP_DATA_DIRECTORY: 临时数据缓存目录，位于 SAVE_DIRECTORY 下的 ShareData 文件夹。
+
+DATA_FETCH_RETRIES: 数据获取失败后的重试次数。
+
+DATA_FETCH_DELAY: 数据获取失败后重试的延迟时间（秒）。
+
+MAX_WORKERS: 并发处理任务的最大线程数。
+
+**HistDataEngine.py：**
+
+DB_URL: PostgreSQL 数据库连接字符串。请根据您的实际数据库配置进行修改。
+
+class StockSyncEngine:
+    DB_URL = "postgresql+psycopg2://postgres:YOUR_PASSWORD@*****/***" # 请替换 YOUR_PASSWORD
+    # ...
+    
+global_start: 历史数据同步的起始日期，格式为 YYYYMMDD
+
+<br />
+
+## 🚀 使用方法
+
+执行 Corenews_Main.py 文件将启动整个自动化分析流程.
+
+程序将执行以下步骤：
+
+数据同步：通过 HistDataEngine 检查并同步 A 股主要上市公司的日 K 线数据到 PostgreSQL。
+
+数据获取：从 Akshare 获取最新的市场行情、研报、资金流向、行业板块等数据。
+
+深度分析：计算各项技术指标、筹码分布，进行行业趋势分析，并根据预设信号进行智能筛选。
+
+报告生成：将所有分析结果汇总生成一份多工作表的 Excel 报告。
+
+数据库存储：将最终的分析报告数据也同步到 PostgreSQL 数据库的 daily_stock_report 和 daily_industry_analysis 表中。
+
+您可以在控制台看到详细的日志输出，追踪程序的运行状态。
+
+<br />
+
+## 📊 输出结果
+
+所有报告和缓存文件将生成在 Corenews_Main.py 中 Config 类定义的 SAVE_DIRECTORY 下 (默认为 C:\Users\YourUsername\Downloads\CoreNews_Reports)。
+
+**分析报告**
+
+审计报告_YYYYMMDD.xlsx：包含 数据汇总、行业深度分析、主力研报筛选、均线多头排列、资金流向、强势股池、技术指标信号 等多个工作表。
+
+**缓存文件**
+
+tradeCalendar_YYYYMMDD.txt：交易日历缓存。
+
+StockIndes_YYYYMMDD.txt：股票基础信息缓存（股票池）。
+
+ShareData/ 目录：包含各类原始数据和清洗后的数据缓存文件 (例如 A股实时行情_经清洗_YYYYMMDD.txt, MACD_hist_data_cache_经清洗_YYYYMMDD.txt 等)。
+
+<br />
+
+## 🔗SQL 数据库表结构 (sql_schema.sql)
+
+
+请确保在运行程序前，在您的 Corenews 数据库中创建以下表结构：
+
+-- 表: stock_daily_kline - 存储每日股票K线数据
+CREATE TABLE IF NOT EXISTS stock_daily_kline (
+    trade_date DATE NOT NULL,
+    symbol VARCHAR(10) NOT NULL,
+    open NUMERIC,
+    close NUMERIC,
+    high NUMERIC,
+    low NUMERIC,
+    close_normal NUMERIC,
+    adj_ratio NUMERIC,
+    PRIMARY KEY (symbol, trade_date)
+);
+
+-- 表: daily_stock_report - 存储每日股票分析汇总报告
+CREATE TABLE IF NOT EXISTS daily_stock_report (
+    report_date DATE NOT NULL,
+    "股票代码" VARCHAR(10) NOT NULL,
+    "股票简称" VARCHAR(50),
+    "行业" VARCHAR(50),
+    "最新价" NUMERIC,
+    "获利比例" VARCHAR(20),
+    "90集中度" VARCHAR(20),
+    "平均成本" NUMERIC,
+    "筹码状态" VARCHAR(50),
+    "强势股" VARCHAR(10),
+    "量价齐升" VARCHAR(10),
+    "连涨天数" INTEGER,
+    "放量天数" INTEGER,
+    "TOP10行业" VARCHAR(10),
+    "MACD_12269" VARCHAR(50),
+    "MACD_12269_动能" VARCHAR(50),
+    "MACD_12269_DIF" NUMERIC,
+    "MACD_6135" VARCHAR(50),
+    "MACD_6135_动能" VARCHAR(50),
+    "MACD_6135_DIF" NUMERIC,
+    "KDJ_Signal" VARCHAR(100),
+    "CCI_Signal" VARCHAR(100),
+    "RSI_Signal" VARCHAR(100),
+    "BOLL_Signal" VARCHAR(50),
+    "研报买入次数" INTEGER,
+    "完全多头排列" VARCHAR(10),
+    "10日均线价" NUMERIC,
+    "30日均线价" NUMERIC,
+    "60日均线价" NUMERIC,
+    "资金动能" VARCHAR(50),
+    "5日资金流入" VARCHAR(50),
+    "10日资金流入" VARCHAR(50),
+    "20日资金流入" VARCHAR(50),
+    "股票链接" TEXT,
+    "所属行业信号" VARCHAR(50),
+    PRIMARY KEY (report_date, "股票代码")
+);
+
+-- 表: daily_industry_analysis - 存储每日行业分析结果
+CREATE TABLE IF NOT EXISTS daily_industry_analysis (
+    report_date DATE NOT NULL,
+    "行业名称" VARCHAR(50) NOT NULL,
+    "行业指数" NUMERIC,
+    "涨幅_now" NUMERIC,
+    "净额_now" NUMERIC,
+    "领涨股" VARCHAR(50),
+    "领涨股-涨跌幅" NUMERIC,
+    "净额_3d" NUMERIC,
+    "涨幅_3d" NUMERIC,
+    "净额_5d" NUMERIC,
+    "涨幅_5d" NUMERIC,
+    "净额_10d" NUMERIC,
+    "涨幅_10d" NUMERIC,
+    "净额_20d" NUMERIC,
+    "涨幅_20d" NUMERIC,
+    "换手率" NUMERIC,
+    "大单印证" VARCHAR(20),
+    "资金分" NUMERIC,
+    "价格分" NUMERIC,
+    "换手分" NUMERIC,
+    "趋势得分" NUMERIC,
+    "行业信号" VARCHAR(50),
+    PRIMARY KEY (report_date, "行业名称")
+);
+
+<br />
+
+⚠️ 免责声明
+
+本项目提供的所有数据、分析报告和投资建议仅供学习、研究和参考，不构成任何投资建议。投资者应自行承担投资风险，并根据自身情况做出独立的投资决策。本项目的开发者不对任何使用本系统数据或分析结果而导致的投资损失承担责任。
+
+请务必理解并同意以上声明后，再使用本项目。
 
 <br>
-
-**主要字段说明**
-
-研报买入次数：近六个月机构推荐买入的次数（热度指标）。
-
-强势股/量价齐升：是否入选当日相关强势榜单。
-
-MACD_12269/6135：显示具体的金叉类型（如“零轴上金叉”）。
-
-MACD动能：如“加速上涨 (红柱加长)”。
-
-KDJ_Signal：如“底背离金叉”、“极值J线反转”。
-
-完全多头排列：MA10 > MA30 > MA60。
-
-资金流入：5日/10日/20日的主力资金净额。
-
-排序逻辑：默认按 研报买入次数 (降序) -> 连涨天数 (降序) -> 放量天数 (降序) 进行排序，优先展示机构看好且处于上升趋势的个股。
-
-<br>
-
-## ⚠️ 免责声明
-
-本项目仅供学习和研究使用，不构成任何投资建议。
-
-量化指标基于历史数据计算，无法预测未来市场黑天鹅事件。
-
-股市有风险，入市需谨慎。
