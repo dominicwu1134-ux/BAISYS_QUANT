@@ -5,6 +5,7 @@ import akshare as ak
 import time
 import numpy as np
 
+
 class IndustryFlowAnalyzer:
 
     def __init__(self, config):
@@ -17,16 +18,22 @@ class IndustryFlowAnalyzer:
         if pd.isna(val): return 0.0
         s = str(val).strip()
         try:
-            if '亿' in s: return float(s.replace('亿', ''))
-            elif '万' in s: return float(s.replace('万', '')) / 10000.0
-            else: return float(s)
-        except: return 0.0
+            if '亿' in s:
+                return float(s.replace('亿', ''))
+            elif '万' in s:
+                return float(s.replace('万', '')) / 10000.0
+            else:
+                return float(s)
+        except:
+            return 0.0
 
     def _clean_pct_string(self, val):
         if pd.isna(val): return 0.0
         if isinstance(val, (int, float)): return float(val)
-        try: return float(str(val).replace('%', '').strip())
-        except: return 0.0
+        try:
+            return float(str(val).replace('%', '').strip())
+        except:
+            return 0.0
 
     def _fetch_and_clean(self, period_name):
         """抓取同花顺行业资金流接口"""
@@ -81,7 +88,7 @@ class IndustryFlowAnalyzer:
             except Exception as e:
                 print(f"[WARN] 缓存加载失败: {e}")
 
-        print(f"\n>>> 开始从接口获取行业趋势及筹码分布...")
+        print(f"\n>>> 获取行业趋势")
         period_map = {"即时": "now", "3日排行": "3d", "5日排行": "5d", "10日排行": "10d", "20日排行": "20d"}
         dfs = {}
         for p_name, p_key in period_map.items():
@@ -106,7 +113,7 @@ class IndustryFlowAnalyzer:
         if not turnover_df.empty:
             main = pd.merge(main, turnover_df, on='行业名称', how='left')
         else:
-            main['换手率'] = 0.0 # 兜底逻辑
+            main['换手率'] = 0.0  # 兜底逻辑
 
         big_deal_stocks = self._fetch_big_deal_logic()
         main['大单印证'] = main['领涨股'].apply(lambda x: '确认' if x in big_deal_stocks else '无')
@@ -114,10 +121,11 @@ class IndustryFlowAnalyzer:
         # 3. 核心计算 (处理缺失值)
         money_rank_cols = ['净额_3d', '净额_5d', '净额_10d', '净额_20d']
         for col in money_rank_cols: main[col] = main[col].fillna(0.0)
-        
-        main['资金分'] = (main['净额_3d'] * 0.4 + main['净额_5d'] * 0.3 + main['净额_10d'] * 0.2 + main['净额_20d'] * 0.1).rank(pct=True) * 100
-        main['价格分'] = (main['涨幅_now'].rank(pct=True) * 100) # 以即时强度为主
-        main['换手分'] = main['换手率'].rank(pct=True, ascending=False) * 100 # 换手越低（缩量）得分越高
+
+        main['资金分'] = (main['净额_3d'] * 0.4 + main['净额_5d'] * 0.3 + main['净额_10d'] * 0.2 + main[
+            '净额_20d'] * 0.1).rank(pct=True) * 100
+        main['价格分'] = (main['涨幅_now'].rank(pct=True) * 100)  # 以即时强度为主
+        main['换手分'] = main['换手率'].rank(pct=True, ascending=False) * 100  # 换手越低（缩量）得分越高
         main['趋势得分'] = (main['资金分'] * 0.5 + main['价格分'] * 0.5).round(2)
 
         # 4. 潜入识别信号逻辑
