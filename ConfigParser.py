@@ -56,6 +56,11 @@ class Config:
         self.PRICE_ALIASES = {'最新价': '最新价', '现价': '最新价', '当前价格': '最新价', '今收盘': '最新价',
                               '收盘': '最新价', '收盘价': '最新价'}
 
+        # 新增：读取 Tushare Token
+        self.TUSHARE_TOKEN = db.get('tushare_token')  # 如果没有配置，默认为 None
+        if not self.TUSHARE_TOKEN:
+            raise ValueError("配置文件中缺少 'tushare_token'，请在 [DATABASE] 节点下添加。")
+
         log = config['LOGGING']
         self.LOG_LEVEL = log.get('LOG_LEVEL', 'INFO')
         self.LOG_DIR = os.path.join(self.HOME_DIRECTORY, log.get('LOG_DIR', 'Logs'))
