@@ -142,17 +142,9 @@ git clone https://github.com/chowkuanyen/BAISYS_QUAN.git
 
 cd BAISYS_QUAN
 
-**创建并激活虚拟环境 (推荐)：**
-
-python -m venv baisys_env
-
-Windows:baisys_env\Scripts\activate
-
-macOS/Linux:source baisys_env/bin/activate
-
 **安装依赖包:**
 
-pip install pandas akshare tushare sqlalchemy psycopg2-binary pandas-ta openpyxl xlsxwriter
+pip install -r requirements.txt
 
 注：openpyxl 和 xlsxwriter 用于 Excel 文件的读写。psycopg2-binary 是 PostgreSQL 的 Python 驱动。
 
