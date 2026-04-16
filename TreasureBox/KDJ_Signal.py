@@ -188,7 +188,7 @@ engine.dispose()
 close_on_signal_map = {}
 for _, row in df_signal_close.iterrows():
     symbol = row['symbol']
-    date_str = row['trade_date'].strftime('%Y-%m-%d')
+    date_str = row['trade_date']
     close_val = row['close']
     # 反向找 stock_code
     for code, info in stock_info_map.items():
