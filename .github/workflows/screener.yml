@@ -2,12 +2,28 @@ name: BAISYS_QUANT Daily Screener
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'      # 每个交易日的 16:30 自动运行
-  workflow_dispatch:             # 允许你随时手动触发
+    - cron: '30 8 * * 1-5'      # (备选1) 每个交易日的 16:30 自动运行
+    - cron: '0 8 * * 1-5'       # (备选2) 每个交易日的 16:00 数据更稳定时运行
+    # 详情请参见文末的“可选优化”部分
+  workflow_dispatch:
 
 jobs:
   run-screener:
     runs-on: ubuntu-latest
+    
+    # 启动一个临时的 PostgreSQL 服务容器供程序使用
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
 
     steps:
       # 1. 拉取你的项目代码
@@ -20,7 +36,13 @@ jobs:
         with:
           python-version: '3.13'
 
-      # 3. 安装项目依赖 (使用缓存加速)
+      # 3. 安装系统依赖 (PostgreSQL 客户端库)
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpq-dev
+
+      # 4. 安装项目依赖 (使用缓存加速)
       - name: Cache pip packages
         uses: actions/cache@v4
         with:
@@ -34,19 +56,30 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # 4. 运行核心分析程序
+      # 5. 关键修复：修正 pandas-ta 的安装版本问题
+      - name: Fix pandas-ta version conflict
+        run: |
+          pip uninstall -y pandas-ta
+          pip install pandas-ta==0.4.71b0 --no-deps
+          pip install pandas
+
+      # 6. 运行核心分析程序 (使用正确的入口文件)
       - name: Run BAISYS_QUANT analysis
         env:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-          # 如果需要 Telegram 通知，在这里添加对应的秘密变量
+          PGHOST: localhost
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
         run: |
-          # 假设项目主入口文件是 main.py
-          python main.py
+          python Corenews_Main.py
 
-      # 5. (可选) 保存生成的 Excel 报告
+      # 7. 保存生成的 Excel 报告 (修改为正确的路径)
       - name: Upload Excel report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: baisys-report
-          # 请确认报告的实际生成路径
-          path: path/to/your/generated/report.xlsx
+          path: |
+            **/*.xlsx
