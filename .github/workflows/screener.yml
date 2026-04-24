@@ -1,0 +1,52 @@
+name: BAISYS_QUANT Daily Screener
+
+on:
+  schedule:
+    - cron: '30 8 * * 1-5'      # 每个交易日的 16:30 自动运行
+  workflow_dispatch:             # 允许你随时手动触发
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 拉取你的项目代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. 设置 Python 运行环境
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. 安装项目依赖 (使用缓存加速)
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # 4. 运行核心分析程序
+      - name: Run BAISYS_QUANT analysis
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          # 如果需要 Telegram 通知，在这里添加对应的秘密变量
+        run: |
+          # 假设项目主入口文件是 main.py
+          python main.py
+
+      # 5. (可选) 保存生成的 Excel 报告
+      - name: Upload Excel report
+        uses: actions/upload-artifact@v4
+        with:
+          name: baisys-report
+          # 请确认报告的实际生成路径
+          path: path/to/your/generated/report.xlsx
