@@ -71,8 +71,10 @@ jobs:
           PGPORT: 5432
           PGUSER: postgres
           PGPASSWORD: postgres
-          PGDATABASE: postgres
+          PGDATABASE: Corenews
         run: |
+          cd DataManager
+          ls -la
           python Corenews_Main.py
 
       # 7. 保存生成的 Excel 报告 (修改为正确的路径)
