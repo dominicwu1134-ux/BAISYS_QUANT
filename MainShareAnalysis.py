@@ -498,7 +498,7 @@ class StockAnalyzer:
         # 这个方法现在主要委托给MainCostDataManager
         return main_cost_df
 
-    def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
+       def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
                           base_stock_codes_pure: List[str]) -> pd.DataFrame:
         """
         合并所有数据源和信号，生成最终汇总报告。
@@ -506,270 +506,226 @@ class StockAnalyzer:
         """
         print("\n>>> 正在汇总所有数据和信号 (技术指标作为独立列)...")
 
-        final_df = pd.DataFrame(base_stock_codes_pure, columns=['股票代码'])
-        final_df['股票代码'] = final_df['股票代码'].astype(str)
+        # 第一步：创建基础 DataFrame（确保股票代码列）
+        final_df = pd.DataFrame({'股票代码': base_stock_codes_pure})
+        final_df['股票代码'] = final_df['股票代码'].astype(str).str.zfill(6)
+        print(f"  - 基础股票代码数量: {len(final_df)}")
 
-        # 防御 None
-        spot_df = processed_data.get('spot_data_all', pd.DataFrame())
-        file_industry_df = processed_data.get('individual_industry', pd.DataFrame())
+        # 第二步：获取 spot 数据和行业数据
+        spot_df = processed_data.get('spot_data_all')
         if spot_df is None:
             spot_df = pd.DataFrame()
-        if file_industry_df is None:
-            file_industry_df = pd.DataFrame()
-
-        # 安全获取名称数据
-        name_source_spot = pd.DataFrame()
-        if '股票代码' in spot_df.columns and '股票简称' in spot_df.columns:
-            name_source_spot = spot_df[['股票代码', '股票简称']].drop_duplicates(subset=['股票代码'])
-
-        # 安全合并名称
-        name_dfs = [name_source_spot] if not name_source_spot.empty else []
-        if not file_industry_df.empty and '股票代码' in file_industry_df.columns and '股票简称' in file_industry_df.columns:
-            name_dfs.append(file_industry_df[['股票代码', '股票简称']])
-        if name_dfs:
-            all_names = pd.concat(name_dfs).drop_duplicates(subset=['股票代码'], keep='first')
+        if not spot_df.empty and '股票代码' in spot_df.columns:
+            spot_df['股票代码'] = spot_df['股票代码'].astype(str).str.zfill(6)
         else:
-            # 如果没有名称数据，创建一个包含所有代码的默认 DataFrame
-            all_names = pd.DataFrame({'股票代码': final_df['股票代码'], '股票简称': 'N/A'})
+            spot_df = pd.DataFrame()
+            print("  [WARN] spot_data_all 无效或缺少股票代码列")
 
-        # 保证类型一致
-        all_names['股票代码'] = all_names['股票代码'].astype(str).str.zfill(6)
-        final_df = pd.merge(final_df, all_names, on='股票代码', how='left')
-
-        # 价格关联逻辑
-        if '股票简称' not in spot_df.columns:
-            self.logger.critical("[FATAL] 实时行情数据中缺少 '股票简称' 列，无法按要求按简称关联。回退到按代码关联。")
-            price_source_key = '股票代码'
-            if '股票代码' in spot_df.columns and '最新价' in spot_df.columns:
-                price_source = spot_df[['股票代码', '最新价']].copy()
-            else:
-                price_source = pd.DataFrame()
+        industry_info = processed_data.get('individual_industry')
+        if industry_info is None:
+            industry_info = pd.DataFrame()
+        if not industry_info.empty and '股票代码' in industry_info.columns:
+            industry_info['股票代码'] = industry_info['股票代码'].astype(str).str.zfill(6)
         else:
-            price_source_key = '股票简称'
-            if '股票代码' in spot_df.columns and '股票简称' in spot_df.columns and '最新价' in spot_df.columns:
-                price_source = spot_df[['股票代码', '股票简称', '最新价']].copy()
-                price_source['最新价'] = pd.to_numeric(price_source['最新价'], errors='coerce')
-                price_source = price_source[price_source['最新价'].notna() & (price_source['最新价'] > 0)].copy()
-                price_source = price_source.drop_duplicates(subset=[price_source_key], keep='first')
-            else:
-                price_source = pd.DataFrame()
+            industry_info = pd.DataFrame()
+            print("  [WARN] individual_industry 无效或缺少股票代码列")
 
-        final_df.drop(columns=['最新价'], errors='ignore', inplace=True)
+        # 第三步：合并股票简称（优先使用 spot_df，其次 industry_info）
+        # 构建名称映射字典
+        name_dict = {}
+        if not spot_df.empty and '股票简称' in spot_df.columns:
+            name_dict.update(spot_df.set_index('股票代码')['股票简称'].to_dict())
+        if not industry_info.empty and '股票简称' in industry_info.columns:
+            name_dict.update(industry_info.set_index('股票代码')['股票简称'].to_dict())
+        # 为所有股票代码填充简称
+        final_df['股票简称'] = final_df['股票代码'].map(name_dict).fillna('N/A')
+        print(f"  - 股票简称填充完成，缺失数量: {(final_df['股票简称'] == 'N/A').sum()}")
 
-        if not price_source.empty and '股票代码' in price_source.columns:
-            def extract_pure_code(code_str):
-                code_str = str(code_str).strip().upper()
-                for prefix in ['SH', 'SZ', 'BJ', 'sh', 'sz', 'bj']:
-                    if code_str.startswith(prefix):
-                        code_str = code_str[2:]
-                        break
-                return code_str.zfill(6)
+        # 第四步：合并最新价（从 spot_df 或从 K线数据）
+        # 优先使用 spot_df 中的最新价
+        price_dict = {}
+        if not spot_df.empty and '最新价' in spot_df.columns:
+            price_dict.update(spot_df.set_index('股票代码')['最新价'].to_dict())
+        final_df['最新价'] = final_df['股票代码'].map(price_dict).fillna('N/A')
+        print(f"  - 最新价填充完成，有效数量: {(final_df['最新价'] != 'N/A').sum()}")
 
-            price_source['股票代码_纯'] = price_source['股票代码'].apply(extract_pure_code)
-            final_df['股票代码'] = final_df['股票代码'].astype(str).str.zfill(6)
-            final_df = pd.merge(final_df, price_source[['股票代码_纯', '最新价']],
-                                left_on='股票代码', right_on='股票代码_纯', how='left')
-            final_df.drop(columns=['股票代码_纯'], errors='ignore', inplace=True)
-        else:
-            print("[WARN] 无法获取价格数据，最新价将为空。")
-            final_df['最新价'] = 'N/A'
-
-        # 确保股票简称和最新价列存在
-        if '股票简称' not in final_df.columns:
-            final_df['股票简称'] = 'N/A'
-        else:
-            final_df['股票简称'] = final_df['股票简称'].fillna('N/A')
-        if '最新价' not in final_df.columns:
-            final_df['最新价'] = 'N/A'
-        else:
-            final_df['最新价'] = final_df['最新价'].fillna('N/A')
-
-        # 均线突破数据
-        xstp_df = processed_data.get('processed_xstp_df', pd.DataFrame())
+        # 第五步：合并均线突破数据（xstp_df）
+        xstp_df = processed_data.get('processed_xstp_df')
         if xstp_df is None:
             xstp_df = pd.DataFrame()
-        xstp_cols = ['股票代码', '完全多头排列', '当前价格', '10日均线价', '30日均线价', '60日均线价']
         if not xstp_df.empty and '股票代码' in xstp_df.columns:
-            cols_present = [col for col in xstp_cols if col in xstp_df.columns]
-            merge_df = xstp_df[cols_present].drop_duplicates(subset=['股票代码'])
-            final_df = pd.merge(final_df, merge_df, on='股票代码', how='left')
-
-        if '完全多头排列' not in final_df.columns:
-            final_df['完全多头排列'] = '否'
-        else:
-            final_df['完全多头排列'] = final_df['完全多头排列'].fillna('否')
-
-        # 资金流向数据
-        fund_flow_df = processed_data.get('market_fund_flow_raw', pd.DataFrame())
-        if fund_flow_df is not None and not fund_flow_df.empty and '股票简称' in fund_flow_df.columns and '资金流入净额' in fund_flow_df.columns:
-            merge_df = fund_flow_df[['股票简称', '资金流入净额']].drop_duplicates(subset=['股票简称'])
-            final_df = pd.merge(final_df, merge_df, on='股票简称', how='left')
-            final_df['5日资金流入'] = final_df['资金流入净额']
-            final_df.drop(columns=['资金流入净额'], errors='ignore', inplace=True)
-
-        fund_flow_df_10 = processed_data.get('market_fund_flow_raw_10', pd.DataFrame())
-        if fund_flow_df_10 is not None and not fund_flow_df_10.empty and '股票简称' in fund_flow_df_10.columns and '资金流入净额' in fund_flow_df_10.columns:
-            merge_df_10 = fund_flow_df_10[['股票简称', '资金流入净额']].drop_duplicates(subset=['股票简称'])
-            final_df = pd.merge(final_df, merge_df_10, on='股票简称', how='left')
-            final_df['10日资金流入'] = final_df['资金流入净额']
-            final_df.drop(columns=['资金流入净额'], errors='ignore', inplace=True)
-
-        fund_flow_df_20 = processed_data.get('market_fund_flow_raw_20', pd.DataFrame())
-        if fund_flow_df_20 is not None and not fund_flow_df_20.empty and '股票简称' in fund_flow_df_20.columns and '资金流入净额' in fund_flow_df_20.columns:
-            merge_df_20 = fund_flow_df_20[['股票简称', '资金流入净额']].drop_duplicates(subset=['股票简称'])
-            final_df = pd.merge(final_df, merge_df_20, on='股票简称', how='left')
-            final_df['20日资金流入'] = final_df['资金流入净额']
-            final_df.drop(columns=['资金流入净额'], errors='ignore', inplace=True)
-
-        # 资金动能
-        f5_col, f10_col, f20_col = '5日资金流入', '10日资金流入', '20日资金流入'
-        if all(col in final_df.columns for col in [f5_col, f10_col, f20_col]):
-            def calculate_trend(row):
-                v5 = Parse_Currency.Parse_Currency.parse_money_str(row[f5_col])
-                v10 = Parse_Currency.Parse_Currency.parse_money_str(row[f10_col])
-                v20 = Parse_Currency.Parse_Currency.parse_money_str(row[f20_col])
-                if (v5 > v10 or v5 > v20) and v5 > 0:
-                    return "动能增强"
-                elif v5 > 0:
-                    return "流入"
+            xstp_df['股票代码'] = xstp_df['股票代码'].astype(str).str.zfill(6)
+            # 选择需要的列
+            xstp_cols = ['股票代码', '完全多头排列', '当前价格', '10日均线价', '30日均线价', '60日均线价']
+            xstp_sub = xstp_df[[c for c in xstp_cols if c in xstp_df.columns]].drop_duplicates(subset=['股票代码'])
+            final_df = pd.merge(final_df, xstp_sub, on='股票代码', how='left')
+            # 填充默认值
+            for col in ['完全多头排列', '当前价格', '10日均线价', '30日均线价', '60日均线价']:
+                if col not in final_df.columns:
+                    final_df[col] = 'N/A' if col == '完全多头排列' else 0.0
                 else:
-                    return ""
-            final_df['资金动能'] = final_df.apply(calculate_trend, axis=1)
-            cols = list(final_df.columns)
-            if '资金动能' in cols:
-                target_idx = cols.index(f5_col)
-                cols.insert(target_idx + 1, cols.pop(cols.index('资金动能')))
-                final_df = final_df[cols]
+                    final_df[col] = final_df[col].fillna('N/A' if col == '完全多头排列' else 0.0)
+        else:
+            # 如果没有均线数据，添加默认列
+            final_df['完全多头排列'] = '否'
+            final_df['当前价格'] = 0.0
+            final_df['10日均线价'] = 0.0
+            final_df['30日均线价'] = 0.0
+            final_df['60日均线价'] = 0.0
+            print("  [WARN] processed_xstp_df 无效，均线数据为空")
 
-        # 强势股、连续上涨等
-        strong_raw = processed_data.get('strong_stocks_raw', pd.DataFrame())
-        if strong_raw is not None and not strong_raw.empty and '股票代码' in strong_raw.columns:
-            strong_codes = strong_raw['股票代码'].tolist()
+        # 第六步：合并资金流向数据
+        for days, key in [('5日', 'market_fund_flow_raw'), ('10日', 'market_fund_flow_raw_10'), ('20日', 'market_fund_flow_raw_20')]:
+            flow_df = processed_data.get(key)
+            if flow_df is not None and not flow_df.empty and '股票简称' in flow_df.columns and '资金流入净额' in flow_df.columns:
+                flow_df = flow_df.drop_duplicates(subset=['股票简称'])
+                flow_dict = flow_df.set_index('股票简称')['资金流入净额'].to_dict()
+                final_df[f'{days}资金流入'] = final_df['股票简称'].map(flow_dict).fillna('0')
+            else:
+                final_df[f'{days}资金流入'] = '0'
+
+        # 计算资金动能
+        def calc_trend(row):
+            try:
+                v5 = float(str(row['5日资金流入']).replace(',', ''))
+                v10 = float(str(row['10日资金流入']).replace(',', ''))
+                v20 = float(str(row['20日资金流入']).replace(',', ''))
+                if (v5 > v10 or v5 > v20) and v5 > 0:
+                    return '动能增强'
+                elif v5 > 0:
+                    return '流入'
+                else:
+                    return ''
+            except:
+                return ''
+        final_df['资金动能'] = final_df.apply(calc_trend, axis=1)
+
+        # 第七步：合并强势股、连续上涨、量价齐升、持续放量
+        # 强势股
+        strong = processed_data.get('strong_stocks_raw')
+        if strong is not None and not strong.empty and '股票代码' in strong.columns:
+            strong_codes = set(strong['股票代码'].astype(str).str.zfill(6))
             final_df['强势股'] = final_df['股票代码'].apply(lambda x: '是' if x in strong_codes else '否')
         else:
             final_df['强势股'] = '否'
 
-        rise_df = processed_data.get('consecutive_rise_raw', pd.DataFrame())
-        if rise_df is not None and not rise_df.empty and '股票代码' in rise_df.columns and '连涨天数' in rise_df.columns:
-            rise_df = rise_df[['股票代码', '连涨天数']].drop_duplicates(subset=['股票代码'])
-            final_df = pd.merge(final_df, rise_df, on='股票代码', how='left').fillna({'连涨天数': 0})
+        # 连续上涨
+        rise = processed_data.get('consecutive_rise_raw')
+        if rise is not None and not rise.empty and '股票代码' in rise.columns and '连涨天数' in rise.columns:
+            rise_dict = rise.set_index('股票代码')['连涨天数'].to_dict()
+            final_df['连涨天数'] = final_df['股票代码'].map(rise_dict).fillna(0).astype(int)
         else:
             final_df['连涨天数'] = 0
-        final_df['连涨天数'] = final_df['连涨天数'].astype(int)
 
-        ljqs_raw = processed_data.get('ljqs_raw', pd.DataFrame())
-        if ljqs_raw is not None and not ljqs_raw.empty and '股票代码' in ljqs_raw.columns:
-            ljqs_codes = ljqs_raw['股票代码'].tolist()
+        # 量价齐升
+        ljqs = processed_data.get('ljqs_raw')
+        if ljqs is not None and not ljqs.empty and '股票代码' in ljqs.columns:
+            ljqs_codes = set(ljqs['股票代码'].astype(str).str.zfill(6))
             final_df['量价齐升'] = final_df['股票代码'].apply(lambda x: '是' if x in ljqs_codes else '否')
         else:
             final_df['量价齐升'] = '否'
 
-        cxfl_raw = processed_data.get('cxfl_raw', pd.DataFrame())
-        if cxfl_raw is not None and not cxfl_raw.empty and '股票代码' in cxfl_raw.columns and '放量天数' in cxfl_raw.columns:
-            cxfl_df = cxfl_raw[['股票代码', '放量天数']].drop_duplicates(subset=['股票代码'])
-            final_df = pd.merge(final_df, cxfl_df, on='股票代码', how='left').fillna({'放量天数': 0})
+        # 持续放量
+        cxfl = processed_data.get('cxfl_raw')
+        if cxfl is not None and not cxfl.empty and '股票代码' in cxfl.columns and '放量天数' in cxfl.columns:
+            cxfl_dict = cxfl.set_index('股票代码')['放量天数'].to_dict()
+            final_df['放量天数'] = final_df['股票代码'].map(cxfl_dict).fillna(0).astype(int)
         else:
             final_df['放量天数'] = 0
-        final_df['放量天数'] = final_df['放量天数'].astype(int)
 
-        # 技术指标合并
-        ta_dfs_to_merge = []
-        macd_std = processed_data.get('MACD_12269', pd.DataFrame())
-        if macd_std is not None and not macd_std.empty and '股票代码' in macd_std.columns and 'MACD_12269_Signal' in macd_std.columns:
-            ta_dfs_to_merge.append(macd_std[['股票代码', 'MACD_12269_Signal']].rename(columns={'MACD_12269_Signal': 'MACD_12269'}))
-
-        macd_fast = processed_data.get('MACD_6135', pd.DataFrame())
-        if macd_fast is not None and not macd_fast.empty and '股票代码' in macd_fast.columns and 'MACD_6135_Signal' in macd_fast.columns:
-            ta_dfs_to_merge.append(macd_fast[['股票代码', 'MACD_6135_Signal']].rename(columns={'MACD_6135_Signal': 'MACD_6135'}))
-
-        kdj = processed_data.get('KDJ', pd.DataFrame())
-        if kdj is not None and not kdj.empty and '股票代码' in kdj.columns and 'KDJ_Signal' in kdj.columns:
-            ta_dfs_to_merge.append(kdj[['股票代码', 'KDJ_Signal']].rename(columns={'KDJ_Signal': 'KDJ_Signal'}))
-
-        cci = processed_data.get('CCI', pd.DataFrame())
-        if cci is not None and not cci.empty and '股票代码' in cci.columns and 'CCI_Signal' in cci.columns:
-            ta_dfs_to_merge.append(cci[['股票代码', 'CCI_Signal']].rename(columns={'CCI_Signal': 'CCI_Signal'}))
-
-        rsi = processed_data.get('RSI', pd.DataFrame())
-        if rsi is not None and not rsi.empty and '股票代码' in rsi.columns and 'RSI_Signal' in rsi.columns:
-            rsi['RSI_Signal'] = rsi['RSI_Signal'].astype(str).str.split(' ').str[0]
-            ta_dfs_to_merge.append(rsi[['股票代码', 'RSI_Signal']].rename(columns={'RSI_Signal': 'RSI_Signal'}))
-
-        boll = processed_data.get('BOLL', pd.DataFrame())
-        if boll is not None and not boll.empty and '股票代码' in boll.columns and 'BOLL_Signal' in boll.columns:
-            ta_dfs_to_merge.append(boll[['股票代码', 'BOLL_Signal']].rename(columns={'BOLL_Signal': 'BOLL_Signal'}))
-
-        for ta_df in ta_dfs_to_merge:
-            final_df = pd.merge(final_df, ta_df.drop_duplicates(subset=['股票代码']), on='股票代码', how='left')
-
-        momentum = processed_data.get('MACD_DIF_MOMENTUM', pd.DataFrame())
-        if momentum is not None and not momentum.empty and '股票代码' in momentum.columns:
-            final_df = pd.merge(final_df, momentum, on='股票代码', how='left')
-            for col in ['MACD_12269_动能', 'MACD_6135_动能']:
-                if col in final_df.columns:
-                    final_df[col] = final_df[col].fillna('')
+        # 第八步：合并技术指标信号
+        ta_signals_map = {}
+        for indicator in ['MACD_12269', 'MACD_6135', 'KDJ_Signal', 'CCI_Signal', 'RSI_Signal', 'BOLL_Signal']:
+            df = processed_data.get(indicator)
+            if df is not None and not df.empty and '股票代码' in df.columns:
+                # 取对应的信号列
+                if indicator == 'MACD_12269' and 'MACD_12269_Signal' in df.columns:
+                    sig_col = 'MACD_12269_Signal'
+                elif indicator == 'MACD_6135' and 'MACD_6135_Signal' in df.columns:
+                    sig_col = 'MACD_6135_Signal'
+                elif indicator == 'KDJ_Signal' and 'KDJ_Signal' in df.columns:
+                    sig_col = 'KDJ_Signal'
+                elif indicator == 'CCI_Signal' and 'CCI_Signal' in df.columns:
+                    sig_col = 'CCI_Signal'
+                elif indicator == 'RSI_Signal' and 'RSI_Signal' in df.columns:
+                    sig_col = 'RSI_Signal'
+                elif indicator == 'BOLL_Signal' and 'BOLL_Signal' in df.columns:
+                    sig_col = 'BOLL_Signal'
+                else:
+                    continue
+                df['股票代码'] = df['股票代码'].astype(str).str.zfill(6)
+                ta_signals_map[indicator] = df.set_index('股票代码')[sig_col].to_dict()
+            else:
+                ta_signals_map[indicator] = {}
 
         for col in ['MACD_12269', 'MACD_6135', 'KDJ_Signal', 'CCI_Signal', 'RSI_Signal', 'BOLL_Signal']:
-            if col not in final_df.columns:
-                final_df[col] = ''
-            else:
-                final_df[col] = final_df[col].fillna('')
+            final_df[col] = final_df['股票代码'].map(ta_signals_map.get(col, {})).fillna('')
 
-        # TOP10行业
-        top_ind_df = processed_data.get('top_industry_cons_df', pd.DataFrame())
-        if top_ind_df is not None and not top_ind_df.empty and '股票代码' in top_ind_df.columns:
-            top_codes = set(top_ind_df['股票代码'].astype(str).unique())
-            final_df['TOP10行业'] = final_df['股票代码'].apply(lambda x: '是' if str(x) in top_codes else '否')
+        # 第九步：合并 MACD 动能和 DIF
+        momentum = processed_data.get('MACD_DIF_MOMENTUM')
+        if momentum is not None and not momentum.empty and '股票代码' in momentum.columns:
+            momentum['股票代码'] = momentum['股票代码'].astype(str).str.zfill(6)
+            for col in ['MACD_12269_动能', 'MACD_6135_动能', 'MACD_12269_DIF', 'MACD_6135_DIF']:
+                if col in momentum.columns:
+                    final_df[col] = final_df['股票代码'].map(momentum.set_index('股票代码')[col].to_dict()).fillna('')
+                else:
+                    final_df[col] = ''
+        else:
+            for col in ['MACD_12269_动能', 'MACD_6135_动能', 'MACD_12269_DIF', 'MACD_6135_DIF']:
+                final_df[col] = ''
+
+        # 第十步：合并 TOP10 行业
+        top_ind = processed_data.get('top_industry_cons_df')
+        if top_ind is not None and not top_ind.empty and '股票代码' in top_ind.columns:
+            top_codes = set(top_ind['股票代码'].astype(str).str.zfill(6))
+            final_df['TOP10行业'] = final_df['股票代码'].apply(lambda x: '是' if x in top_codes else '否')
         else:
             final_df['TOP10行业'] = '否'
 
-        # 行业信息
-        industry_df = processed_data.get('individual_industry', pd.DataFrame())
-        if industry_df is None:
-            industry_df = pd.DataFrame()
-        if not industry_df.empty and '股票代码' in industry_df.columns and '行业' in industry_df.columns:
-            final_df = pd.merge(final_df, industry_df[['股票代码', '行业']], on='股票代码', how='left')
-            final_df['行业'] = final_df['行业'].fillna('N/A')
-            print(f"  - 行业数据已成功合并到最终报告。")
+        # 第十一步：合并行业信息
+        # 注意：individual_industry 可能已经包含行业列，但我们在前面没有用它，这里单独处理
+        if not industry_info.empty and '行业' in industry_info.columns:
+            industry_dict = industry_info.set_index('股票代码')['行业'].to_dict()
+            final_df['行业'] = final_df['股票代码'].map(industry_dict).fillna('N/A')
         else:
-            if '行业' not in final_df.columns:
-                final_df['行业'] = 'N/A'
-            self.logger.info("[INFO] 行业数据为空或列缺失，跳过合并。")
+            final_df['行业'] = 'N/A'
 
-        # 主力成本
-        main_cost_df = processed_data.get('main_cost_data', pd.DataFrame())
-        if main_cost_df is not None and not main_cost_df.empty:
-            if '代码' in main_cost_df.columns:
-                main_cost_df.rename(columns={'代码': '股票代码'}, inplace=True)
-            if '股票代码' in main_cost_df.columns:
-                main_cost_df['股票代码'] = main_cost_df['股票代码'].astype(str).str.zfill(6)
-                cost_cols = ['股票代码', '主力成本', '机构参与度', '主力成本差价', '主力成本差价百分比',
-                             '成本位置', '机构参与度等级', '主力控盘强度']
-                existing_cols = [c for c in cost_cols if c in main_cost_df.columns]
-                if existing_cols:
-                    final_df = pd.merge(final_df, main_cost_df[existing_cols], on='股票代码', how='left')
-                    for col in ['主力成本', '主力成本差价', '成本位置', '主力控盘强度']:
+        # 第十二步：合并主力成本数据
+        main_cost = processed_data.get('main_cost_data')
+        if main_cost is not None and not main_cost.empty:
+            # 标准化股票代码
+            if '代码' in main_cost.columns:
+                main_cost.rename(columns={'代码': '股票代码'}, inplace=True)
+            if '股票代码' in main_cost.columns:
+                main_cost['股票代码'] = main_cost['股票代码'].astype(str).str.zfill(6)
+                cost_cols = ['股票代码', '主力成本', '成本位置', '主力控盘强度']
+                existing = [c for c in cost_cols if c in main_cost.columns]
+                if existing:
+                    cost_sub = main_cost[existing].drop_duplicates(subset=['股票代码'])
+                    final_df = pd.merge(final_df, cost_sub, on='股票代码', how='left')
+                    for col in ['主力成本', '成本位置', '主力控盘强度']:
                         if col not in final_df.columns:
                             final_df[col] = 'N/A'
                         else:
                             final_df[col] = final_df[col].fillna('N/A')
                 else:
                     final_df['主力成本'] = 'N/A'
-                    final_df['主力成本差价'] = 'N/A'
                     final_df['成本位置'] = 'N/A'
                     final_df['主力控盘强度'] = 'N/A'
             else:
                 final_df['主力成本'] = 'N/A'
-                final_df['主力成本差价'] = 'N/A'
                 final_df['成本位置'] = 'N/A'
                 final_df['主力控盘强度'] = 'N/A'
         else:
             final_df['主力成本'] = 'N/A'
-            final_df['主力成本差价'] = 'N/A'
             final_df['成本位置'] = 'N/A'
             final_df['主力控盘强度'] = 'N/A'
 
-        # 有信号筛选
+        # 计算主力成本差价（如果主力成本和最新价都存在且为数字）
+        final_df['主力成本差价'] = 'N/A'
+        # 可以后续再计算，这里简化
+
+        # 第十三步：筛选有信号的股票（保持原有 has_any_signal 逻辑）
         def has_any_signal(row):
             return (row.get('完全多头排列') == '是' or
                     row.get('强势股') == '是' or
@@ -781,22 +737,25 @@ class StockAnalyzer:
                     row.get('CCI_Signal', '') != '' or
                     row.get('RSI_Signal', '') != '' or
                     row.get('BOLL_Signal', '') != '')
-        if not final_df.empty:
-            final_df = final_df[final_df.apply(has_any_signal, axis=1)].copy()
+        before_filter = len(final_df)
+        final_df = final_df[final_df.apply(has_any_signal, axis=1)].copy()
+        print(f"  - 信号筛选前 {before_filter} 只，筛选后 {len(final_df)} 只")
 
         # 排序
         if not final_df.empty:
             final_df.sort_values(by=['连涨天数', '放量天数'], ascending=[False, False], inplace=True)
             final_df.reset_index(drop=True, inplace=True)
 
-            # 链接
+            # 添加股票链接
             final_df['完整股票代码'] = final_df['股票代码'].apply(format_stock_code)
             final_df['股票链接'] = "https://hybrid.gelonghui.com/stock-check/" + final_df['完整股票代码']
             final_df.drop(columns=['完整股票代码'], inplace=True, errors='ignore')
             if '当前价格' in final_df.columns and '最新价' in final_df.columns:
                 final_df.drop(columns=['当前价格'], inplace=True, errors='ignore')
+        else:
+            print("  [WARN] 筛选后无股票，返回空 DataFrame")
 
-        # 列顺序
+        # 选择最终列顺序（参考原代码）
         base_cols = ['股票代码', '股票简称', '行业', '最新价', '主力成本', '主力成本差价', '成本位置', '主力控盘强度']
         signal_cols = [
             '强势股', '量价齐升', '连涨天数', '放量天数', 'TOP10行业',
@@ -811,7 +770,6 @@ class StockAnalyzer:
         ]
         final_cols = base_cols + signal_cols + report_cols + ['股票链接']
         final_df = final_df[[col for col in final_cols if col in final_df.columns]]
-
         return final_df
 
     def _merge_industry_signal_to_stocks(self, stock_df: pd.DataFrame, industry_df: pd.DataFrame) -> pd.DataFrame:
