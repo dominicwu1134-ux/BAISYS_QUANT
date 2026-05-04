@@ -497,8 +497,7 @@ class StockAnalyzer:
         """
         # 这个方法现在主要委托给MainCostDataManager
         return main_cost_df
-
-       def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
+    def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
                           base_stock_codes_pure: List[str]) -> pd.DataFrame:
         """
         合并所有数据源和信号，生成最终汇总报告。
