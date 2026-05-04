@@ -498,64 +498,71 @@ class StockAnalyzer:
         # 这个方法现在主要委托给MainCostDataManager
         return main_cost_df
 
-    def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
+        def _consolidate_data(self, processed_data: Dict[str, pd.DataFrame],
                           base_stock_codes_pure: List[str]) -> pd.DataFrame:
         """
         完全重写：稳健构建最终报告
         """
         print("\n>>> 正在汇总所有数据和信号 (技术指标作为独立列)...")
 
-        # 基础股票代码列表
-        df = pd.DataFrame({'股票代码': [code.zfill(6) for code in base_stock_codes_pure]})
+        # 基础股票代码列表（确保列存在）
+        codes = [code.zfill(6) for code in base_stock_codes_pure]
+        if not codes:
+            print("  [ERROR] 基础股票代码列表为空！")
+            return pd.DataFrame()
 
-        # 1. spot 数据（提供名称和价格）
+        df = pd.DataFrame({'股票代码': codes})
+
+        # ==================== 1. 股票简称与最新价 ====================
+        # 优先从 spot_data_all 获取
         spot = processed_data.get('spot_data_all')
-        print(f"  [DEBUG] spot_data_all 是否为空: {spot is None or spot.empty}, 列: {spot.columns.tolist() if spot is not None else 'None'}")
-        # 初始化默认值
-        df['股票简称'] = 'N/A'
-        df['最新价'] = 'N/A'
+        name_map = {}
+        price_map = {}
         if spot is not None and not spot.empty and '股票代码' in spot.columns:
             spot['股票代码'] = spot['股票代码'].astype(str).str.zfill(6)
             if '股票简称' in spot.columns:
                 name_map = spot.set_index('股票代码')['股票简称'].to_dict()
-                df['股票简称'] = df['股票代码'].map(name_map).fillna('N/A')
-                print(f"  [DEBUG] 成功映射股票简称，有效数量: {(df['股票简称'] != 'N/A').sum()}")
             if '最新价' in spot.columns:
                 price_map = spot.set_index('股票代码')['最新价'].to_dict()
-                df['最新价'] = df['股票代码'].map(price_map).fillna('N/A')
-        else:
-            print("  [WARN] spot_data_all 无效，股票简称和最新价将使用默认值 N/A")
-
-        # 2. 行业信息
+        # 若 spot 无简称，则尝试从 individual_industry 获取
         ind_info = processed_data.get('individual_industry')
-        if ind_info is not None and not ind_info.empty and '股票代码' in ind_info.columns and '股票简称' in ind_info.columns:
+        if not name_map and ind_info is not None and not ind_info.empty and '股票代码' in ind_info.columns and '股票简称' in ind_info.columns:
             ind_info['股票代码'] = ind_info['股票代码'].astype(str).str.zfill(6)
-            name_map2 = ind_info.set_index('股票代码')['股票简称'].to_dict()
-            # 优先使用 spot 的简称，若无则用行业信息中的名称
-            df['股票简称'] = df['股票代码'].map(name_map2).fillna(df['股票简称'])
-            if '行业' in ind_info.columns:
-                industry_map = ind_info.set_index('股票代码')['行业'].to_dict()
-                df['行业'] = df['股票代码'].map(industry_map).fillna('N/A')
+            name_map.update(ind_info.set_index('股票代码')['股票简称'].to_dict())
+
+        df['股票简称'] = df['股票代码'].map(name_map).fillna('N/A')
+        df['最新价'] = df['股票代码'].map(price_map).fillna('N/A')
+        print(f"  - 股票简称填充完成，缺失数量: {(df['股票简称'] == 'N/A').sum()}")
+        print(f"  - 最新价填充完成，有效数量: {(df['最新价'] != 'N/A').sum()}")
+        # 如果股票简称全部为 N/A，但数据源有内容，发出警告
+        if (df['股票简称'] == 'N/A').all() and name_map:
+            print("  [WARN] 股票简称映射失败，请检查spot_data_all中的股票代码格式")
+
+        # ==================== 2. 行业 ====================
+        if ind_info is not None and not ind_info.empty and '股票代码' in ind_info.columns and '行业' in ind_info.columns:
+            ind_info['股票代码'] = ind_info['股票代码'].astype(str).str.zfill(6)
+            industry_map = ind_info.set_index('股票代码')['行业'].to_dict()
+            df['行业'] = df['股票代码'].map(industry_map).fillna('N/A')
         else:
             df['行业'] = 'N/A'
 
-        # 3. 均线突破数据
+        # ==================== 3. 均线突破 ====================
         xstp = processed_data.get('processed_xstp_df')
         if xstp is not None and not xstp.empty and '股票代码' in xstp.columns:
             xstp['股票代码'] = xstp['股票代码'].astype(str).str.zfill(6)
             for col in ['完全多头排列', '当前价格', '10日均线价', '30日均线价', '60日均线价']:
                 if col in xstp.columns:
                     m = xstp.set_index('股票代码')[col].to_dict()
-                    df[col] = df['股票代码'].map(m).fillna('N/A' if col=='完全多头排列' else 0)
+                    df[col] = df['股票代码'].map(m).fillna('N/A' if col == '完全多头排列' else 0)
                 else:
-                    df[col] = 'N/A' if col=='完全多头排列' else 0
+                    df[col] = 'N/A' if col == '完全多头排列' else 0
         else:
             df['完全多头排列'] = '否'
             df['10日均线价'] = 0
             df['30日均线价'] = 0
             df['60日均线价'] = 0
 
-        # 4. 资金流向
+        # ==================== 4. 资金流向 ====================
         for days, key in [('5日', 'market_fund_flow_raw'), ('10日', 'market_fund_flow_raw_10'), ('20日', 'market_fund_flow_raw_20')]:
             fdf = processed_data.get(key)
             if fdf is not None and not fdf.empty and '股票简称' in fdf.columns and '资金流入净额' in fdf.columns:
@@ -581,7 +588,7 @@ class StockAnalyzer:
                 return ''
         df['资金动能'] = df.apply(calc_trend, axis=1)
 
-        # 5. 强势股、连续上涨、量价齐升、持续放量
+        # ==================== 5. 强势股、连涨、量价齐升、放量 ====================
         strong = processed_data.get('strong_stocks_raw')
         if strong is not None and not strong.empty and '股票代码' in strong.columns:
             strong_codes = set(strong['股票代码'].astype(str).str.zfill(6))
@@ -591,6 +598,7 @@ class StockAnalyzer:
 
         rise = processed_data.get('consecutive_rise_raw')
         if rise is not None and not rise.empty and '股票代码' in rise.columns and '连涨天数' in rise.columns:
+            rise['股票代码'] = rise['股票代码'].astype(str).str.zfill(6)
             rise_map = rise.set_index('股票代码')['连涨天数'].to_dict()
             df['连涨天数'] = df['股票代码'].map(rise_map).fillna(0).astype(int)
         else:
@@ -605,12 +613,13 @@ class StockAnalyzer:
 
         cxfl = processed_data.get('cxfl_raw')
         if cxfl is not None and not cxfl.empty and '股票代码' in cxfl.columns and '放量天数' in cxfl.columns:
+            cxfl['股票代码'] = cxfl['股票代码'].astype(str).str.zfill(6)
             cxfl_map = cxfl.set_index('股票代码')['放量天数'].to_dict()
             df['放量天数'] = df['股票代码'].map(cxfl_map).fillna(0).astype(int)
         else:
             df['放量天数'] = 0
 
-        # 6. 技术指标信号
+        # ==================== 6. 技术指标信号 ====================
         for indicator, signal_col in [('MACD_12269', 'MACD_12269_Signal'), ('MACD_6135', 'MACD_6135_Signal'),
                                       ('KDJ', 'KDJ_Signal'), ('CCI', 'CCI_Signal'),
                                       ('RSI', 'RSI_Signal'), ('BOLL', 'BOLL_Signal')]:
@@ -624,7 +633,7 @@ class StockAnalyzer:
                 col_name = signal_col.replace('_Signal', '') if indicator in ['MACD_12269','MACD_6135'] else signal_col
                 df[col_name] = ''
 
-        # 7. MACD 动能和DIF
+        # ==================== 7. MACD 动能和DIF ====================
         momentum = processed_data.get('MACD_DIF_MOMENTUM')
         if momentum is not None and not momentum.empty and '股票代码' in momentum.columns:
             momentum['股票代码'] = momentum['股票代码'].astype(str).str.zfill(6)
@@ -638,7 +647,7 @@ class StockAnalyzer:
             for col in ['MACD_12269_动能', 'MACD_6135_动能', 'MACD_12269_DIF', 'MACD_6135_DIF']:
                 df[col] = ''
 
-        # 8. TOP10 行业
+        # ==================== 8. TOP10 行业 ====================
         top_ind = processed_data.get('top_industry_cons_df')
         if top_ind is not None and not top_ind.empty and '股票代码' in top_ind.columns:
             top_codes = set(top_ind['股票代码'].astype(str).str.zfill(6))
@@ -646,7 +655,7 @@ class StockAnalyzer:
         else:
             df['TOP10行业'] = '否'
 
-        # 9. 主力成本数据
+        # ==================== 9. 主力成本数据 ====================
         cost = processed_data.get('main_cost_data')
         if cost is not None and not cost.empty:
             if '代码' in cost.columns:
@@ -659,7 +668,6 @@ class StockAnalyzer:
                         df[col] = df['股票代码'].map(m).fillna('N/A')
                     else:
                         df[col] = 'N/A'
-                # 主力成本差价暂不计算
                 df['主力成本差价'] = 'N/A'
             else:
                 df['主力成本'] = 'N/A'
@@ -672,7 +680,7 @@ class StockAnalyzer:
             df['成本位置'] = 'N/A'
             df['主力控盘强度'] = 'N/A'
 
-        # 10. 信号筛选（有任意信号即保留）
+        # ==================== 10. 信号筛选 ====================
         def has_any_signal(row):
             return (row.get('完全多头排列') == '是' or
                     row.get('强势股') == '是' or
@@ -688,7 +696,7 @@ class StockAnalyzer:
         df = df[df.apply(has_any_signal, axis=1)].copy()
         print(f"  - 信号筛选前 {before} 只，筛选后 {len(df)} 只")
 
-        # 11. 排序和链接
+        # ==================== 11. 排序和链接 ====================
         if not df.empty:
             df.sort_values(by=['连涨天数', '放量天数'], ascending=[False, False], inplace=True)
             df.reset_index(drop=True, inplace=True)
@@ -700,7 +708,7 @@ class StockAnalyzer:
         else:
             print("  [WARN] 筛选后无股票")
 
-        # 12. 最终列顺序
+        # ==================== 12. 最终列顺序 ====================
         base_cols = ['股票代码', '股票简称', '行业', '最新价', '主力成本', '主力成本差价', '成本位置', '主力控盘强度']
         signal_cols = [
             '强势股', '量价齐升', '连涨天数', '放量天数', 'TOP10行业',
@@ -714,7 +722,9 @@ class StockAnalyzer:
             '资金动能', '5日资金流入', '10日资金流入', '20日资金流入'
         ]
         final_cols = base_cols + signal_cols + report_cols + ['股票链接']
-        df = df[[col for col in final_cols if col in df.columns]]
+        # 只保留存在的列
+        final_cols = [col for col in final_cols if col in df.columns]
+        df = df[final_cols]
         return df
 
     def _merge_industry_signal_to_stocks(self, stock_df: pd.DataFrame, industry_df: pd.DataFrame) -> pd.DataFrame:
