@@ -509,20 +509,22 @@ class StockAnalyzer:
         df = pd.DataFrame({'股票代码': [code.zfill(6) for code in base_stock_codes_pure]})
 
         # 1. spot 数据（提供名称和价格）
-        spot = processed_data.get('spot_data_all')
-        if spot is not None and not spot.empty and '股票代码' in spot.columns:
-            spot['股票代码'] = spot['股票代码'].astype(str).str.zfill(6)
-            # 简称
-            if '股票简称' in spot.columns:
-                name_map = spot.set_index('股票代码')['股票简称'].to_dict()
-                df['股票简称'] = df['股票代码'].map(name_map).fillna('N/A')
-            # 价格
-            if '最新价' in spot.columns:
-                price_map = spot.set_index('股票代码')['最新价'].to_dict()
-                df['最新价'] = df['股票代码'].map(price_map).fillna('N/A')
-        else:
-            df['股票简称'] = 'N/A'
-            df['最新价'] = 'N/A'
+     spot = processed_data.get('spot_data_all')
+     print(f"  [DEBUG] spot_data_all 是否为空: {spot is None or spot.empty}, 列: {spot.columns.tolist() if spot is not None else 'None'}")
+     # 初始化默认值
+     df['股票简称'] = 'N/A'
+     df['最新价'] = 'N/A'
+     if spot is not None and not spot.empty and '股票代码' in spot.columns:
+         spot['股票代码'] = spot['股票代码'].astype(str).str.zfill(6)
+         if '股票简称' in spot.columns:
+             name_map = spot.set_index('股票代码')['股票简称'].to_dict()
+             df['股票简称'] = df['股票代码'].map(name_map).fillna('N/A')
+             print(f"  [DEBUG] 成功映射股票简称，有效数量: {(df['股票简称'] != 'N/A').sum()}")
+         if '最新价' in spot.columns:
+             price_map = spot.set_index('股票代码')['最新价'].to_dict()
+             df['最新价'] = df['股票代码'].map(price_map).fillna('N/A')
+     else:
+         print("  [WARN] spot_data_all 无效，股票简称和最新价将使用默认值 N/A")
 
         # 2. 行业信息
         ind_info = processed_data.get('individual_industry')
