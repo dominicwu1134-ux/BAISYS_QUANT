@@ -945,26 +945,58 @@ class StockAnalyzer:
             self.logger.error(f"Telegram API 错误: {e}")
     # =============================================
 
-    
     def _add_limit_up_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
-        """涨停基因（游资核心）"""
-        if df.empty or hist_df_all.empty:
-            df['近3日涨停'] = 0
-            df['历史涨停次数'] = 0
-            return df
-
-        hist = hist_df_all.copy()
-        hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
-
-        recent = hist.sort_values('trade_date').groupby('symbol').tail(3)
-        recent_map = recent.groupby('symbol')['涨停'].sum().to_dict()
-        total_map = hist.groupby('symbol')['涨停'].sum().to_dict()
-
-        df['近3日涨停'] = df['股票代码'].map({k[-6:]: v for k, v in recent_map.items()}).fillna(0)
-        df['历史涨停次数'] = df['股票代码'].map({k[-6:]: v for k, v in total_map.items()}).fillna(0)
-
+    """涨停基因（游资核心）"""
+    if df.empty or hist_df_all.empty:
+        df['近3日涨停'] = 0
+        df['历史涨停次数'] = 0
         return df
 
+    hist = hist_df_all.copy()
+
+    # 🔍 DEBUG（非常重要）
+    print("[DEBUG] hist columns:", hist.columns.tolist())
+
+    # ✅ 自动识别日期字段
+    date_col = None
+    for col in ['trade_date', 'date', 'datetime']:
+        if col in hist.columns:
+            date_col = col
+            break
+
+    if date_col is None:
+        print("[WARN] 未找到日期字段")
+        df['近3日涨停'] = 0
+        df['历史涨停次数'] = 0
+        return df
+
+    # ✅ 校验字段
+    if 'high' not in hist.columns or 'close' not in hist.columns:
+        print("[WARN] 缺少 high/close 字段")
+        df['近3日涨停'] = 0
+        df['历史涨停次数'] = 0
+        return df
+
+    # 涨停计算（简化版）
+    hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
+
+    # 最近3天
+    recent = hist.sort_values(date_col).groupby('symbol').tail(3)
+    recent_map = recent.groupby('symbol')['涨停'].sum().to_dict()
+
+    # 历史
+    total_map = hist.groupby('symbol')['涨停'].sum().to_dict()
+
+    df['近3日涨停'] = df['股票代码'].map(
+        {k[-6:]: v for k, v in recent_map.items()}
+    ).fillna(0)
+
+    df['历史涨停次数'] = df['股票代码'].map(
+        {k[-6:]: v for k, v in total_map.items()}
+    ).fillna(0)
+
+    return df
+    
 
     def _add_volume_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
         """盘口强度（用日K替代）"""
@@ -986,26 +1018,39 @@ class StockAnalyzer:
         return df
 
 
-    def _calc_market_emotion(self, hist_df_all: pd.DataFrame) -> str:
-        """情绪周期判断（简化版）"""
-        if hist_df_all.empty:
-            return "未知"
+   def _calc_market_emotion(self, hist_df_all: pd.DataFrame) -> str:
+    """情绪周期判断"""
+    if hist_df_all.empty:
+        return "未知"
 
-        hist = hist_df_all.copy()
-        hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
+    hist = hist_df_all.copy()
 
-        latest_date = hist['trade_date'].max()
-        today_df = hist[hist['trade_date'] == latest_date]
+    # 自动识别日期列
+    date_col = None
+    for col in ['trade_date', 'date', 'datetime']:
+        if col in hist.columns:
+            date_col = col
+            break
 
-        limit_count = today_df['涨停'].sum()
+    if date_col is None:
+        return "未知"
 
-        if limit_count > 80:
-            return "主升期"
-        elif limit_count > 30:
-            return "分歧期"
-        else:
-            return "退潮期"
+    if 'high' not in hist.columns or 'close' not in hist.columns:
+        return "未知"
 
+    hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
+
+    latest_date = hist[date_col].max()
+    today_df = hist[hist[date_col] == latest_date]
+
+    limit_count = today_df['涨停'].sum()
+
+    if limit_count > 80:
+        return "主升期"
+    elif limit_count > 30:
+        return "分歧期"
+    else:
+        return "退潮期"
 
     def run(self):
 
