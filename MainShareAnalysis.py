@@ -22,7 +22,7 @@ from pathlib import Path
 from ConfigParser import Config
 from FormatManager.ShareCodeFormatMgr import format_stock_code
 from Distribution import MainCostDataManager
-from DataManager.CalendarManager import  TradingCalendarAnalyzer
+from DataManager.CalendarManager import TradingCalendarAnalyzer
 
 # ========== 新增导入：用于 Telegram 推送 ==========
 import asyncio
@@ -798,6 +798,11 @@ class StockAnalyzer:
         if hist_df_all.empty:
             return pd.DataFrame(columns=['股票代码', '最新价'])
 
+        # 确保有标准化列名
+        if 'symbol' not in hist_df_all.columns or 'close' not in hist_df_all.columns:
+            self.logger.warning("K线数据缺少 symbol 或 close 列，无法获取最新价")
+            return pd.DataFrame(columns=['股票代码', '最新价'])
+
         # 获取每个股票的最新一条记录（按日期排序）
         latest_records = hist_df_all.sort_values('trade_date').groupby('symbol').tail(1)
 
@@ -944,43 +949,62 @@ class StockAnalyzer:
         except Exception as e:
             self.logger.error(f"Telegram API 错误: {e}")
     # =============================================
-    def _normalize_kline_columns(self, df):
-        if df is None or len(df) == 0:
+
+    def _normalize_kline_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        标准化K线数据的列名，确保后续模块使用统一的列名：
+        symbol, trade_date, open, high, low, close, volume
+        """
+        if df is None or df.empty:
             return df
 
         df = df.copy()
         col_map = {}
 
+        # 识别代码列
         for col in df.columns:
             c = str(col).lower()
-
-            if 'code' in c or 'symbol' in c:
+            if 'symbol' in c or 'code' in c or 'ts_code' in c:
                 col_map[col] = 'symbol'
             elif 'date' in c or 'time' in c:
-                col_map[col] = 'date'
-            elif 'open' in c:
+                col_map[col] = 'trade_date'
+            elif c == 'open':
                 col_map[col] = 'open'
-            elif 'high' in c:
+            elif c == 'high':
                 col_map[col] = 'high'
-            elif 'low' in c:
+            elif c == 'low':
                 col_map[col] = 'low'
-            elif 'close' in c:
+            elif c == 'close':
                 col_map[col] = 'close'
-            elif 'vol' in c or 'volume' in c:
+            elif c in ['volume', 'vol', '成交量']:
                 col_map[col] = 'volume'
 
         df = df.rename(columns=col_map)
 
-        # 转数字
+        # 确保必要列存在
+        required_cols = ['symbol', 'trade_date', 'open', 'high', 'low', 'close', 'volume']
+        for col in required_cols:
+            if col not in df.columns:
+                if col == 'volume':
+                    self.logger.warning(f"K线数据缺少 {col} 列，将填充为0")
+                    df[col] = 0
+                else:
+                    self.logger.warning(f"K线数据缺少 {col} 列，可能导致后续计算错误")
+
+        # 转换数值类型
         for col in ['open', 'high', 'low', 'close', 'volume']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        print("[字段统一完成]:", df.columns.tolist())
+        # 确保 trade_date 为日期类型
+        if 'trade_date' in df.columns:
+            df['trade_date'] = pd.to_datetime(df['trade_date'], errors='coerce')
+
+        print("[K线列标准化完成] 列名:", df.columns.tolist())
         return df
-    #==================================================
+
     def _add_limit_up_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
-        #"""涨停基因（游资核心）"""
+        """涨停基因（游资核心）"""
         if df.empty or hist_df_all.empty:
             df['近3日涨停'] = 0
             df['历史涨停次数'] = 0
@@ -988,39 +1012,24 @@ class StockAnalyzer:
 
         hist = hist_df_all.copy()
 
-        # 🔍 DEBUG（非常重要）
-        print("[DEBUG] hist columns:", hist.columns.tolist())
-
-        # ✅ 自动识别日期字段
-        date_col = None
-        for col in ['trade_date', 'date', 'datetime']:
-            if col in hist.columns:
-                date_col = col
-                break
-
-        if date_col is None:
-            print("[WARN] 未找到日期字段")
+        # 确保标准化列存在
+        if 'symbol' not in hist.columns or 'trade_date' not in hist.columns or 'high' not in hist.columns or 'close' not in hist.columns:
+            self.logger.warning("历史K线数据缺少必要列(symbol/trade_date/high/close)，无法计算涨停特征")
             df['近3日涨停'] = 0
             df['历史涨停次数'] = 0
             return df
 
-        # ✅ 校验字段
-        if 'high' not in hist.columns or 'close' not in hist.columns:
-            print("[WARN] 缺少 high/close 字段")
-            df['近3日涨停'] = 0
-            df['历史涨停次数'] = 0
-            return df
-
-        # 涨停计算（简化版）
+        # 涨停计算（简化版：收盘价 >= 最高价 * 0.995）
         hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
 
-        # 最近3天
-        recent = hist.sort_values(date_col).groupby('symbol').tail(3)
+        # 最近3天涨停次数
+        recent = hist.sort_values('trade_date').groupby('symbol').tail(3)
         recent_map = recent.groupby('symbol')['涨停'].sum().to_dict()
 
-        # 历史
+        # 历史总涨停次数
         total_map = hist.groupby('symbol')['涨停'].sum().to_dict()
 
+        # 映射到股票代码（纯数字6位）
         df['近3日涨停'] = df['股票代码'].map(
             {k[-6:]: v for k, v in recent_map.items()}
         ).fillna(0)
@@ -1039,9 +1048,18 @@ class StockAnalyzer:
 
         hist = hist_df_all.copy()
 
+        # 确保有 close 和 volume 列
+        if 'close' not in hist.columns or 'volume' not in hist.columns or 'symbol' not in hist.columns or 'trade_date' not in hist.columns:
+            self.logger.warning("历史K线数据缺少 close/volume/symbol/trade_date 列，无法计算放量倍数")
+            df['放量倍数'] = 1
+            return df
+
+        # 计算成交额（万元，可自行调整单位）
         hist['成交额'] = hist['close'] * hist['volume']
 
+        # 最新一天的成交额
         latest = hist.sort_values('trade_date').groupby('symbol').tail(1)
+        # 近5天平均成交额
         avg5 = hist.sort_values('trade_date').groupby('symbol').tail(5).groupby('symbol')['成交额'].mean()
 
         ratio_map = (latest.set_index('symbol')['成交额'] / avg5).to_dict()
@@ -1051,29 +1069,21 @@ class StockAnalyzer:
         return df
 
     def _calc_market_emotion(self, hist_df_all: pd.DataFrame) -> str:
-        #"""情绪周期判断"""
+        """情绪周期判断"""
         if hist_df_all.empty:
             return "未知"
 
         hist = hist_df_all.copy()
 
-        # 自动识别日期列
-        date_col = None
-        for col in ['trade_date', 'date', 'datetime']:
-            if col in hist.columns:
-                date_col = col
-                break
-
-        if date_col is None:
-            return "未知"
-
-        if 'high' not in hist.columns or 'close' not in hist.columns:
+        # 确保列存在
+        if 'trade_date' not in hist.columns or 'high' not in hist.columns or 'close' not in hist.columns:
+            self.logger.warning("历史K线数据缺少必要列，无法判断情绪")
             return "未知"
 
         hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
 
-        latest_date = hist[date_col].max()
-        today_df = hist[hist[date_col] == latest_date]
+        latest_date = hist['trade_date'].max()
+        today_df = hist[hist['trade_date'] == latest_date]
 
         limit_count = today_df['涨停'].sum()
 
@@ -1083,7 +1093,7 @@ class StockAnalyzer:
             return "分歧期"
         else:
             return "退潮期"
-   
+
     def run(self):
 
         print(f"[INFO]  股票分析程序启动 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -1174,12 +1184,13 @@ class StockAnalyzer:
                     print(f"[ERROR] 数据库查询失败: {e}")
                     hist_df_all = pd.DataFrame()
 
-            if hist_df_all.empty:
+            # ========== 关键修复：标准化K线列名 ==========
+            if not hist_df_all.empty:
+                hist_df_all = self._normalize_kline_columns(hist_df_all)
+            else:
                 print("[WARN] 由于历史数据为空，将跳过所有技术指标计算。")
                 # 这里可能需要处理空数据的情况，防止后续报错
-            else:
-                # 正常调用信号处理
-                pass
+                # 但后续还有用到 hist_df_all 的地方，所以需要空 DataFrame 兼容
 
             # 从K线数据获取最新价格
             latest_prices_df = self._get_latest_prices_from_kline(hist_df_all)
