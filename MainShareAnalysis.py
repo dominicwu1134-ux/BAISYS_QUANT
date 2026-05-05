@@ -692,9 +692,15 @@ class StockAnalyzer:
                     row.get('CCI_Signal', '') != '' or
                     row.get('RSI_Signal', '') != '' or
                     row.get('BOLL_Signal', '') != '')
+
         before = len(df)
+        df_before_filter = df.copy()
         df = df[df.apply(has_any_signal, axis=1)].copy()
         print(f"  - 信号筛选前 {before} 只，筛选后 {len(df)} 只")
+        if df.empty:
+            print("  [WARN] 信号筛选后为空，回退到未筛选数据（避免报告为空）")
+            df = df_before_filter
+
 
         # ==================== 11. 排序和链接 ====================
         if not df.empty:
@@ -807,111 +813,105 @@ class StockAnalyzer:
     # ========== 新增：超短线选股筛选函数 ==========
     def _ultra_short_filter(self, df: pd.DataFrame, industry_df: pd.DataFrame,
                              hist_all: pd.DataFrame, spot_df: pd.DataFrame) -> pd.DataFrame:
-        """超短线精选：热门板块 + 行情启动 + 高价值，剔除追高风险"""
+        """机构级超短线模型：趋势启动 + 资金共振 + 热点驱动"""
         if df.empty:
             return df
 
-        # 1. 热门板块判断
-        if 'TOP10行业' not in df.columns:
-            df['TOP10行业'] = '否'
-        hot_industry = df['TOP10行业'] == '是'
+        # 1. 热点行业优先（核心逻辑）
+        df['热点强度'] = 0
+        if 'TOP10行业' in df.columns:
+            df['热点强度'] += (df['TOP10行业'] == '是').astype(int) * 2
 
-        if industry_df is not None and not industry_df.empty and '行业名称' in industry_df.columns and '涨跌幅' in industry_df.columns:
-            industry_df['行业热度分位'] = industry_df['涨跌幅'].rank(pct=True, ascending=False)
-            industry_hot_map = industry_df.set_index('行业名称')['行业热度分位'].to_dict()
-            df['行业热度'] = df['行业'].map(industry_hot_map).fillna(0)
-            hot_industry = hot_industry | (df['行业热度'] > 0.7)
+        if industry_df is not None and not industry_df.empty:
+            if '行业名称' in industry_df.columns and '涨跌幅' in industry_df.columns:
+                industry_df['rank'] = industry_df['涨跌幅'].rank(pct=True)
+                hot_map = industry_df.set_index('行业名称')['rank'].to_dict()
+                df['热点强度'] += df['行业'].map(hot_map).fillna(0)
 
-        # 2. 行情启动信号
-        macd_12269_dong = df['MACD_12269_动能'].astype(str).fillna('')
-        macd_6135_dong = df['MACD_6135_动能'].astype(str).fillna('')
-        kdj_sig = df['KDJ_Signal'].astype(str).fillna('')
-        cci_sig = df['CCI_Signal'].astype(str).fillna('')
+        # 2. 启动信号（短线核心）
         start_signal = (
             (df['量价齐升'] == '是') |
-            (macd_12269_dong.str.contains('红柱加长|绿柱缩短', na=False)) |
-            (macd_6135_dong.str.contains('红柱加长|绿柱缩短', na=False)) |
-            (kdj_sig.str.contains('金叉', na=False)) |
-            (cci_sig.str.contains('买入', na=False)) |
-            ((df['连涨天数'] >= 1) & (df['放量天数'] >= 1))
+            (df['MACD_12269_动能'].astype(str).str.contains('红柱加长|绿柱缩短', na=False)) |
+            (df['MACD_6135_动能'].astype(str).str.contains('红柱加长|绿柱缩短', na=False)) |
+            (df['KDJ_Signal'].astype(str).str.contains('金叉', na=False)) |
+            (df['CCI_Signal'].astype(str).str.contains('买入', na=False))
         )
 
-        # 3. 高价值信号
-        high_value = (
-            (df['主力控盘强度'].isin(['高度控盘', '中度控盘'])) |
-            (df['成本位置'].isin(['突破主力成本', '接近主力成本'])) |
-            ((df['资金动能'] == '动能增强') & (df['5日资金流入'].astype(str).str.replace(',', '').str.extract(r'(\d+)').astype(float).fillna(0) > 0))
-        )
+        # 3. 资金驱动（主力行为）
+        flow5 = pd.to_numeric(df['5日资金流入'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        flow10 = pd.to_numeric(df['10日资金流入'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
-        # 4. 剔除追高风险
-        if '60日均线价' in df.columns:
-            price = pd.to_numeric(df['最新价'], errors='coerce')
-            ma60 = pd.to_numeric(df['60日均线价'], errors='coerce')
-            deviation = (price - ma60) / ma60 * 100
-            not_overbought = deviation < 15
-        else:
-            not_overbought = True
+        capital_signal = (flow5 > 0) & (flow5 >= flow10)
 
-        if '主力成本' in df.columns:
-            cost_str = df['主力成本'].astype(str).str.replace(',', '')
-            cost = pd.to_numeric(cost_str, errors='coerce')
-            price = pd.to_numeric(df['最新价'], errors='coerce')
-            cost_dev = (price - cost) / cost * 100
-            not_far_from_cost = cost_dev < 20
-        else:
-            not_far_from_cost = True
+        # 4. 控盘 + 成本（机构思维）
+        control_signal = df['主力控盘强度'].isin(['高度控盘', '中度控盘'])
+        cost_signal = df['成本位置'].isin(['突破主力成本', '接近主力成本'])
 
+        # 5. 避免追高（关键）
+        price = pd.to_numeric(df['最新价'], errors='coerce')
+        ma60 = pd.to_numeric(df.get('60日均线价', 0), errors='coerce')
+        deviation = (price - ma60) / ma60 * 100
+        risk_filter = deviation < 12  # 更严格
+
+        # 综合筛选（机构风格：必须同时满足核心条件）
         filtered = df[
-            hot_industry &
+            (df['热点强度'] > 0.8) &
             start_signal &
-            high_value &
-            not_overbought &
-            not_far_from_cost
+            capital_signal &
+            (control_signal | cost_signal) &
+            risk_filter
         ].copy()
 
-        self.logger.info(f"[超短筛选] 原始 {len(df)} 只 → 剩余 {len(filtered)} 只")
+        print(f"[机构超短模型] 筛选后: {len(filtered)} / 原始 {len(df)}")
+
+        # 如果为空，降级策略（防止无结果）
+        if filtered.empty:
+            print("[降级策略] 使用宽松模式")
+            filtered = df[
+                (df['热点强度'] > 0.5) &
+                (start_signal | capital_signal)
+            ].copy()
+
         return filtered
 
     def _rank_and_select(self, df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
-        """综合评分排序取前N"""
+        """机构级评分模型（短线资金驱动）"""
         if df.empty:
             return df
 
         score = pd.Series(0, index=df.index)
+        score += df.get('近3日涨停', 0) * 20
+        score += (df.get('历史涨停次数', 0) > 5).astype(int) * 10
+        score += (df.get('放量倍数', 1) > 1.5).astype(int) * 10
 
-        if '行业热度' in df.columns:
-            score += df['行业热度'] * 30
-        elif 'TOP10行业' in df.columns:
-            score += (df['TOP10行业'] == '是') * 20
 
-        control_map = {'高度控盘': 20, '中度控盘': 15, '轻度控盘': 8, '无控盘': 0}
-        df['控盘分'] = df['主力控盘强度'].map(control_map).fillna(5)
-        score += df['控盘分']
+        # 1. 热点优先（最重要）
+        score += df.get('热点强度', 0) * 40
 
-        start_count = (
-            (df['量价齐升'] == '是').astype(int) +
-            (df['MACD_12269_动能'].astype(str).str.contains('红柱加长|绿柱缩短', na=False)).astype(int) +
-            (df['MACD_6135_动能'].astype(str).str.contains('红柱加长|绿柱缩短', na=False)).astype(int) +
-            (df['KDJ_Signal'].astype(str).str.contains('金叉', na=False)).astype(int) +
-            ((df['连涨天数'] >= 1) & (df['放量天数'] >= 1)).astype(int)
-        )
-        score += start_count * 10
+        # 2. 启动信号评分
+        score += (df['量价齐升'] == '是').astype(int) * 15
+        score += df['MACD_12269_动能'].astype(str).str.contains('红柱加长', na=False).astype(int) * 10
+        score += df['KDJ_Signal'].astype(str).str.contains('金叉', na=False).astype(int) * 10
 
-        score += (df['资金动能'] == '动能增强').astype(int) * 10
-        flow5 = df['5日资金流入'].astype(str).str.replace(',', '')
-        flow5_num = pd.to_numeric(flow5, errors='coerce').fillna(0)
-        score += (flow5_num > 0).astype(int) * 5
+        # 3. 资金强度
+        flow5 = pd.to_numeric(df['5日资金流入'].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        score += (flow5 > 0).astype(int) * 10
+        score += (flow5 > flow5.quantile(0.7)).astype(int) * 10
 
-        if '主力成本' in df.columns:
-            cost = pd.to_numeric(df['主力成本'].astype(str).str.replace(',', ''), errors='coerce')
-            price = pd.to_numeric(df['最新价'], errors='coerce')
-            dev_pct = (price - cost) / cost * 100
-            score += (dev_pct <= 0).astype(int) * 10
-            score += ((dev_pct > 0) & (dev_pct <= 5)).astype(int) * 5
+        # 4. 控盘
+        control_map = {'高度控盘': 15, '中度控盘': 10, '轻度控盘': 5}
+        score += df['主力控盘强度'].map(control_map).fillna(0)
+
+        # 5. 连板/趋势惯性（短线核心）
+        score += df['连涨天数'] * 5
+        score += df['放量天数'] * 3
 
         df['综合得分'] = score
+
         df_sorted = df.sort_values('综合得分', ascending=False).head(top_n)
-        self.logger.info(f"[排序选取] 最终选取 {len(df_sorted)} 只股票")
+
+        print(f"[评分模型] 输出 {len(df_sorted)} 只")
+
         return df_sorted
     # =============================================
 
@@ -944,6 +944,68 @@ class StockAnalyzer:
         except Exception as e:
             self.logger.error(f"Telegram API 错误: {e}")
     # =============================================
+
+    
+    def _add_limit_up_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
+        """涨停基因（游资核心）"""
+        if df.empty or hist_df_all.empty:
+            df['近3日涨停'] = 0
+            df['历史涨停次数'] = 0
+            return df
+
+        hist = hist_df_all.copy()
+        hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
+
+        recent = hist.sort_values('trade_date').groupby('symbol').tail(3)
+        recent_map = recent.groupby('symbol')['涨停'].sum().to_dict()
+        total_map = hist.groupby('symbol')['涨停'].sum().to_dict()
+
+        df['近3日涨停'] = df['股票代码'].map({k[-6:]: v for k, v in recent_map.items()}).fillna(0)
+        df['历史涨停次数'] = df['股票代码'].map({k[-6:]: v for k, v in total_map.items()}).fillna(0)
+
+        return df
+
+
+    def _add_volume_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
+        """盘口强度（用日K替代）"""
+        if df.empty or hist_df_all.empty:
+            df['放量倍数'] = 1
+            return df
+
+        hist = hist_df_all.copy()
+
+        hist['成交额'] = hist['close'] * hist['volume']
+
+        latest = hist.sort_values('trade_date').groupby('symbol').tail(1)
+        avg5 = hist.sort_values('trade_date').groupby('symbol').tail(5).groupby('symbol')['成交额'].mean()
+
+        ratio_map = (latest.set_index('symbol')['成交额'] / avg5).to_dict()
+
+        df['放量倍数'] = df['股票代码'].map({k[-6:]: v for k, v in ratio_map.items()}).fillna(1)
+
+        return df
+
+
+    def _calc_market_emotion(self, hist_df_all: pd.DataFrame) -> str:
+        """情绪周期判断（简化版）"""
+        if hist_df_all.empty:
+            return "未知"
+
+        hist = hist_df_all.copy()
+        hist['涨停'] = (hist['close'] >= hist['high'] * 0.995).astype(int)
+
+        latest_date = hist['trade_date'].max()
+        today_df = hist[hist['trade_date'] == latest_date]
+
+        limit_count = today_df['涨停'].sum()
+
+        if limit_count > 80:
+            return "主升期"
+        elif limit_count > 30:
+            return "分歧期"
+        else:
+            return "退潮期"
+
 
     def run(self):
 
@@ -1099,6 +1161,19 @@ class StockAnalyzer:
             # 调用 _consolidate_data 时，传入基础的纯数字股票代码列表
             consolidated_report = self._consolidate_data(processed_data, final_analysis_codes_pure)
             consolidated_report = self._merge_industry_signal_to_stocks(consolidated_report, industry_analysis_df)
+
+            # ====== 游资增强模块 ======
+            consolidated_report = self._add_limit_up_features(consolidated_report, hist_df_all)
+            consolidated_report = self._add_volume_features(consolidated_report, hist_df_all)
+
+            market_emotion = self._calc_market_emotion(hist_df_all)
+            print(f"[市场情绪] 当前周期: {market_emotion}")
+
+            if market_emotion == "退潮期":
+                consolidated_report = consolidated_report.head(10)
+            elif market_emotion == "主升期":
+                pass
+
 
             # ========== 新增：超短线精选筛选 ==========
             if not consolidated_report.empty:
