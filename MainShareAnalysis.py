@@ -944,7 +944,41 @@ class StockAnalyzer:
         except Exception as e:
             self.logger.error(f"Telegram API 错误: {e}")
     # =============================================
+    def _normalize_kline_columns(self, df):
+        if df is None or len(df) == 0:
+            return df
 
+        df = df.copy()
+        col_map = {}
+
+        for col in df.columns:
+            c = str(col).lower()
+
+            if 'code' in c or 'symbol' in c:
+                col_map[col] = 'symbol'
+            elif 'date' in c or 'time' in c:
+                col_map[col] = 'date'
+            elif 'open' in c:
+                col_map[col] = 'open'
+            elif 'high' in c:
+                col_map[col] = 'high'
+            elif 'low' in c:
+                col_map[col] = 'low'
+            elif 'close' in c:
+                col_map[col] = 'close'
+            elif 'vol' in c or 'volume' in c:
+                col_map[col] = 'volume'
+
+        df = df.rename(columns=col_map)
+
+        # 转数字
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        print("[字段统一完成]:", df.columns.tolist())
+        return df
+    #==================================================
     def _add_limit_up_features(self, df: pd.DataFrame, hist_df_all: pd.DataFrame) -> pd.DataFrame:
         #"""涨停基因（游资核心）"""
         if df.empty or hist_df_all.empty:
